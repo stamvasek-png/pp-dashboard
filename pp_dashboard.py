@@ -1,6 +1,7 @@
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  PP DASHBOARD v1                                             ║
+# ║  PP DASHBOARD v2                                             ║
 # ║  ENTSO-E: systémová odchylka + DAP ceny D0/D+1              ║
+# ║           odstávky (PU + GU) + detekce změn                 ║
 # ║  Delta Green: portfolio + flexibilita                        ║
 # ║                                                              ║
 # ║  STRUKTURA BLOKŮ — každý blok = jedna buňka v Colabu:       ║
@@ -14,6 +15,10 @@
 # ║  08_plot_dg        → graf Delta Green                        ║
 # ║  09_snapshot       → textový výpis aktuálního stavu          ║
 # ║  10_loop           → živá smyčka                             ║
+# ║  11_fetch_outages  → odstávky PU + GU (ENTSO-E)              ║
+# ║  12_plot_outages   → Gantt chart + detekce změn              ║
+# ║  13_fetch_generation → výroba podle zdroje                   ║
+# ║  14_fetch_load       → zatížení skutečnost vs. prognóza      ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 
@@ -41,6 +46,73 @@ DG_BASE    = "https://api.deltagreen.cz/api/proteus/external/v1"
 DG_HEADERS = {"x-api-key": DG_API_KEY, "accept": "application/json"}
 
 client = EntsoePandasClient(api_key=ENTSOE_TOKEN)
+
+# Mapování kódů ENTSO-E typů zdrojů → čitelné názvy + barvy
+# Dle ENTSO-E standardu: B10=Hydro pumped, B14=Nuclear (ne B10!)
+PSR_TYPES = {
+    "B01": ("Biomasa",              "#43A047"),   # zelená
+    "B02": ("Lignit",               "#5D4037"),   # tmavě hnědá
+    "B03": ("Plyn z uhlí",          "#8D6E63"),   # hnědá
+    "B04": ("Zemní plyn",           "#FF7043"),   # oranžová
+    "B05": ("Černé uhlí",           "#37474F"),   # tmavě šedá
+    "B06": ("Topný olej",           "#FFA000"),   # jantarová
+    "B07": ("Ropné břidlice",       "#BF360C"),   # tmavě oranžová
+    "B08": ("Rašelina",             "#795548"),   # hnědá
+    "B09": ("Geotermální",          "#00695C"),   # tmavozelená
+    "B10": ("Přečerpávací hydro",   "#29B6F6"),   # světle modrá
+    "B11": ("Průtočná voda",        "#1E88E5"),   # modrá
+    "B12": ("Vodní nádrž",          "#1565C0"),   # tmavě modrá
+    "B13": ("Mořská",               "#006064"),   # teal
+    "B14": ("Jaderná",              "#7B1FA2"),   # fialová  ← Nuclear!
+    "B15": ("Ostatní OZE",          "#66BB6A"),   # světle zelená
+    "B16": ("Solární",              "#F9A825"),   # žlutá
+    "B17": ("Odpad",                "#78909C"),   # modro-šedá
+    "B18": ("Vítr offshore",        "#00838F"),   # tmavý cyan
+    "B19": ("Vítr onshore",         "#00ACC1"),   # cyan
+    "B20": ("Ostatní",              "#90A4AE"),   # světle šedá
+}
+
+_FALLBACK_COLORS = [
+    "#E53935","#8E24AA","#039BE5","#00897B","#F4511E",
+    "#3949AB","#00ACC1","#43A047","#FB8C00","#6D4C41",
+]
+
+GEN_STACK_ORDER = [
+    "B14","B02","B05","B04","B06","B08","B10","B11","B12",
+    "B01","B17","B16","B19","B18","B15","B03","B20",
+]
+
+def psr_lookup(col) -> tuple:
+    """Vrátí (název, barva) pro daný PSR sloupec (kód nebo tuple)."""
+    psr = str(col[0]) if isinstance(col, tuple) else str(col)
+    if psr in PSR_TYPES:
+        return PSR_TYPES[psr]
+    color = _FALLBACK_COLORS[abs(hash(psr)) % len(_FALLBACK_COLORS)]
+    return (psr, color)
+
+# Mapování čtyřznakového prefixu EIC kódu výrobní jednotky → čitelný název
+UNIT_NAMES = {
+    "15W0": "Elektrárna",
+    "27W0": "Teplárna",
+    "CZE0": "CZ",
+}
+
+def unit_display_name(raw: str) -> str:
+    """Převede syrový kód výrobní jednotky na čitelnější název."""
+    if not isinstance(raw, str):
+        return str(raw)
+    return raw.replace("_", " ").strip()
+
+def pct_to_color(available_pct):
+    """Barva od zelené (100 % dostupnosti) po červenou (0 %)."""
+    r = max(0.0, min(1.0, 1.0 - (available_pct or 0) / 100))
+    if r < 0.5:
+        t = r / 0.5
+        return f"rgb({int(46 + (255 - 46) * t)},{int(125 + (143 - 125) * t)},{int(50 + (0 - 50) * t)})"
+    else:
+        t = (r - 0.5) / 0.5
+        return f"rgb({int(255 + (198 - 255) * t)},{int(143 + (40 - 143) * t)},0)"
+
 print("Setup OK")
 # ── KONEC: 01_setup ─────────────────────────────────────────────
 
@@ -451,11 +523,441 @@ def print_snapshot(df_e, df1, df2):
 # ── KONEC: 09_snapshot ──────────────────────────────────────────
 
 
+# ── BLOK: 13_fetch_generation ───────────────────────────────────
+def fetch_generation(now: pd.Timestamp) -> pd.DataFrame:
+    """
+    Stáhne data výroby podle typu zdroje (CZ) za dnešní den.
+    Vrací DataFrame s PSR kódy jako sloupci a výkonem v MW.
+    """
+    start = now.normalize()
+    end   = now + pd.Timedelta(hours=1)
+    try:
+        gen = client.query_generation("CZ", start=start, end=end, psr_type=None)
+    except Exception as e:
+        print(f"  [WARN] Generace: {e}")
+        return pd.DataFrame()
+    if gen is None or gen.empty:
+        return pd.DataFrame()
+    # Rozbalení MultiIndex: ponecháme pouze "Actual Aggregated"
+    if isinstance(gen.columns, pd.MultiIndex):
+        lvls = gen.columns.get_level_values(1)
+        gen = (gen.xs("Actual Aggregated", level=1, axis=1)
+               if "Actual Aggregated" in lvls
+               else gen.xs(lvls[0], level=1, axis=1))
+    return gen.tz_convert("Europe/Prague") if gen.index.tz else gen
+
+
+def plot_generation(df_gen: pd.DataFrame, now: pd.Timestamp):
+    """
+    Stacked area chart výroby podle zdroje + aktuální celkový výkon.
+    Barvy dle opravených PSR kódů ENTSO-E.
+    """
+    if df_gen.empty:
+        print("  [INFO] Žádná data generace.")
+        return
+
+    fig = go.Figure()
+
+    def _key(c):
+        psr = str(c[0]) if isinstance(c, tuple) else str(c)
+        return GEN_STACK_ORDER.index(psr) if psr in GEN_STACK_ORDER else 999
+
+    total = pd.Series(0.0, index=df_gen.index)
+    for col in sorted(df_gen.columns, key=_key):
+        name, color = psr_lookup(col)
+        series = df_gen[col].fillna(0)
+        if series.sum() < 1:
+            continue
+        total = total + series
+        # rgba fill z hex barvy
+        if color.startswith("#") and len(color) == 7:
+            r = int(color[1:3], 16)
+            g = int(color[3:5], 16)
+            b = int(color[5:7], 16)
+            fill_color = f"rgba({r},{g},{b},0.78)"
+        else:
+            fill_color = color
+        fig.add_trace(go.Scatter(
+            x=series.index, y=series.values,
+            stackgroup="gen", name=name,
+            line=dict(width=0, color=color),
+            fillcolor=fill_color,
+            hovertemplate=f"{name}: %{{y:.0f}} MW<extra></extra>",
+        ))
+
+    # Celkový výkon — tmavá linka nahoře
+    fig.add_trace(go.Scatter(
+        x=total.index, y=total.values, mode="lines", name="Celkem",
+        line=dict(color="#212121", width=1.5),
+        hovertemplate="<b>Celkem: %{y:.0f} MW</b><extra></extra>",
+    ))
+
+    # Čára NOW
+    fig.add_vline(x=now.isoformat(), line_color="#1565C0", line_width=1.5)
+
+    cur_total = float(total.iloc[-1]) if not total.empty else 0.0
+    fig.update_layout(
+        height=380,
+        title_text=(f"Výroba podle zdroje — {now.strftime('%d.%m.%Y %H:%M')}  |  "
+                    f"Aktuálně: {cur_total:,.0f} MW"),
+        template="plotly_white", hovermode="x unified",
+        legend=dict(orientation="h", y=-0.2, x=0, font=dict(size=10)),
+        margin=dict(l=60, r=15, t=50, b=60),
+    )
+    fig.update_xaxes(tickformat="%H:%M", title_text="Čas")
+    fig.update_yaxes(title_text="MW")
+    fig.show()
+
+    # Textový výpis aktuálního mixu
+    last_row = df_gen.dropna(how="all").iloc[-1]
+    items = []
+    for col, val in last_row.items():
+        name, _ = psr_lookup(col)
+        if pd.notna(val) and float(val) > 0:
+            items.append((float(val), name))
+    items.sort(reverse=True)
+    sep = "─" * 52
+    print(sep)
+    print(f"  GENERACE — aktuální mix ({now.strftime('%H:%M')})")
+    print(sep)
+    for val, name in items:
+        pct = val / cur_total * 100 if cur_total else 0
+        bar = "█" * int(pct / 5)
+        print(f"  {name:<22s}  {val:>6.0f} MW  {pct:>4.0f}%  {bar}")
+    print(f"  {'CELKEM':<22s}  {cur_total:>6.0f} MW")
+    print(sep)
+
+# ── KONEC: 13_fetch_generation ──────────────────────────────────
+
+
+# ── BLOK: 14_fetch_load ─────────────────────────────────────────
+def fetch_load(now: pd.Timestamp) -> tuple:
+    """
+    Stáhne skutečné zatížení + prognózu D+1 pro CZ.
+    Vrací (load_actual, load_forecast) jako pd.Series.
+    """
+    start = now.normalize()
+    end   = start + pd.Timedelta(days=2)
+    try:
+        actual = client.query_load("CZ", start=start, end=end)
+        if isinstance(actual, pd.DataFrame):
+            actual = actual.iloc[:, 0]
+        actual = actual.rename("actual_MW").tz_convert("Europe/Prague")
+    except Exception as e:
+        print(f"  [WARN] Zatížení actual: {e}")
+        actual = pd.Series(dtype="float64", name="actual_MW")
+    try:
+        forecast = client.query_load_forecast("CZ", start=start, end=end)
+        if isinstance(forecast, pd.DataFrame):
+            forecast = forecast.iloc[:, 0]
+        forecast = forecast.rename("forecast_MW").tz_convert("Europe/Prague")
+    except Exception as e:
+        print(f"  [WARN] Zatížení forecast: {e}")
+        forecast = pd.Series(dtype="float64", name="forecast_MW")
+    return actual, forecast
+
+
+def plot_load(load_actual: pd.Series, load_fc: pd.Series, now: pd.Timestamp):
+    """Graf zatížení: skutečnost (červená) vs. prognóza D+1 (zelená)."""
+    if load_actual.empty and load_fc.empty:
+        print("  [INFO] Žádná data zatížení.")
+        return
+    fig = go.Figure()
+    if not load_fc.empty:
+        fig.add_trace(go.Scatter(
+            x=load_fc.index, y=load_fc.values, mode="lines",
+            name="Prognóza D+1", line=dict(color="#26A69A", width=2, shape="hv"),
+            hovertemplate="<b>%{x|%a %H:%M}</b><br>Prognóza: %{y:,.0f} MW<extra></extra>",
+        ))
+    if not load_actual.empty:
+        fig.add_trace(go.Scatter(
+            x=load_actual.index, y=load_actual.values, mode="lines",
+            name="Skutečnost", line=dict(color="#E91E63", width=2, shape="hv"),
+            hovertemplate="<b>%{x|%a %H:%M}</b><br>Skutečnost: %{y:,.0f} MW<extra></extra>",
+        ))
+    fig.add_vline(x=now.isoformat(), line_color="#1565C0", line_width=1.5)
+    fig.update_layout(
+        height=300,
+        title_text=f"Zatížení CZ — skutečnost vs. prognóza D+1  ({now.strftime('%d.%m.%Y')})",
+        template="plotly_white", hovermode="x unified",
+        legend=dict(orientation="h", y=-0.2, x=0),
+        margin=dict(l=60, r=15, t=50, b=50),
+    )
+    fig.update_xaxes(tickformat="%H:%M\n%d.%m", title_text="Čas")
+    fig.update_yaxes(title_text="MW")
+    fig.show()
+
+# ── KONEC: 14_fetch_load ────────────────────────────────────────
+
+
+# ── BLOK: 11_fetch_outages ──────────────────────────────────────
+def fetch_outages(now: pd.Timestamp, days_ahead: int = 7) -> pd.DataFrame:
+    """
+    Stáhne odstávky výrobních jednotek (PU) a generačních jednotek (GU)
+    z ENTSO-E pro CZ, od dnešního dne do days_ahead.
+    Vrací prázdný DataFrame pokud data nejsou dostupná.
+    """
+    start = now.normalize()
+    end   = start + pd.Timedelta(days=days_ahead)
+    frames = []
+    for level, fn in [
+        ("PU", client.query_unavailability_of_production_units),
+        ("GU", client.query_unavailability_of_generation_units),
+    ]:
+        try:
+            raw = fn("CZ", start=start, end=end)
+            if raw is not None and not raw.empty:
+                raw = raw.copy()
+                raw["unit_level"] = level
+                frames.append(raw)
+        except Exception as e:
+            print(f"  [WARN] {level} odstávky: {e}")
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def parse_outages(raw: pd.DataFrame) -> pd.DataFrame:
+    """Normalizuje surová data odstávek — přejmenuje sloupce, dopočítá MW."""
+    if raw.empty:
+        return pd.DataFrame()
+    df = raw.copy().rename(columns={
+        "start":                     "outage_start",
+        "end":                       "outage_end",
+        "nominal_power":             "installed_MW",
+        "avail_qty":                 "available_MW",
+        "businesstype":              "outage_type",
+        "production_resource_name":  "unit_raw",
+        "production_resource_id":    "eic_code",
+    })
+    df["unit_name"]    = df["unit_raw"].apply(unit_display_name)
+    df["installed_MW"] = pd.to_numeric(df["installed_MW"], errors="coerce")
+    df["available_MW"] = pd.to_numeric(df["available_MW"], errors="coerce")
+    df["unavailable_MW"] = df["installed_MW"] - df["available_MW"]
+    df["available_pct"]  = (df["available_MW"] / df["installed_MW"] * 100).round(1)
+    for col in ["outage_start", "outage_end"]:
+        if col in df.columns:
+            if df[col].dt.tz is None:
+                df[col] = df[col].dt.tz_localize("UTC").dt.tz_convert("Europe/Prague")
+            else:
+                df[col] = df[col].dt.tz_convert("Europe/Prague")
+    df = (df.drop_duplicates(subset=["unit_raw", "outage_start", "outage_end"])
+            .sort_values(["unit_level", "unavailable_MW"], ascending=[True, False])
+            .reset_index(drop=True))
+    keep = ["unit_raw", "eic_code", "unit_name", "unit_level",
+            "outage_start", "outage_end",
+            "installed_MW", "available_MW", "unavailable_MW", "available_pct",
+            "outage_type", "mrid"]
+    return df[[c for c in keep if c in df.columns]]
+
+
+def detect_changes(df_prev: pd.DataFrame, df_curr: pd.DataFrame) -> dict:
+    """
+    Porovná dvě verze tabulky odstávek a vrátí:
+      new        — sety klic-tuplů nových odstávek
+      ended      — sety klic-tuplů ukončených odstávek
+      changed_mw — DataFrame řádků se změněnou available_MW
+    """
+    key = ["unit_raw", "outage_start", "outage_end"]
+    if df_prev is None or df_prev.empty:
+        return {"new": set(), "ended": set(), "changed_mw": pd.DataFrame()}
+    prev_keys = set(df_prev[key].apply(tuple, axis=1))
+    curr_keys = set(df_curr[key].apply(tuple, axis=1))
+    merged = df_curr.merge(
+        df_prev[key + ["available_MW"]].rename(columns={"available_MW": "prev_MW"}),
+        on=key, how="inner",
+    )
+    changed = merged[abs(merged["available_MW"] - merged["prev_MW"]) > 0.5].copy()
+    changed["delta_MW"] = changed["available_MW"] - changed["prev_MW"]
+    return {
+        "new":        curr_keys - prev_keys,
+        "ended":      prev_keys - curr_keys,
+        "changed_mw": changed[["unit_name", "prev_MW", "available_MW", "delta_MW"]]
+                      if not changed.empty else pd.DataFrame(),
+    }
+
+# ── KONEC: 11_fetch_outages ─────────────────────────────────────
+
+
+# ── BLOK: 12_plot_outages ───────────────────────────────────────
+def plot_outages(df_out: pd.DataFrame, now: pd.Timestamp,
+                 level: str = "PU", changes: dict = None):
+    """
+    Gantt chart odstávek pro danou úroveň (PU nebo GU).
+    Nové odstávky (z changes) jsou zvýrazněny oranžově.
+    """
+    COLOR_NEW     = "#FF6B35"
+    COLOR_SURPLUS = "#1565C0"
+
+    fig = go.Figure()
+    sub = df_out[df_out["unit_level"] == level].copy() if not df_out.empty else pd.DataFrame()
+
+    if sub.empty:
+        fig.add_annotation(
+            text=f"Žádné odstávky na úrovni {level}",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=13, color="#9E9E9E"),
+        )
+        fig.update_layout(
+            height=180,
+            title_text=f"Odstávky {level} — žádná data",
+            template="plotly_white",
+        )
+        fig.show()
+        return
+
+    # Řazení: největší výpadek nahoře
+    impact_order = (sub.groupby("unit_name")["unavailable_MW"]
+                       .max()
+                       .sort_values(ascending=True).index.tolist())
+    sub["unit_name"] = pd.Categorical(sub["unit_name"], categories=impact_order, ordered=True)
+
+    n_units = max(1, sub["unit_name"].nunique())
+    height  = max(200, n_units * 32 + 100)
+
+    xstart = now - pd.Timedelta(days=1)
+    xend   = now.normalize() + pd.Timedelta(days=7)
+
+    # Šedé pruhy víkendů
+    cur = xstart.normalize()
+    while cur < xend:
+        if cur.weekday() == 5:
+            fig.add_vrect(
+                x0=cur, x1=cur + pd.Timedelta(days=2),
+                fillcolor="#90A4AE", opacity=0.07, layer="below", line_width=0,
+            )
+        cur += pd.Timedelta(days=1)
+
+    # Modré podbarvení příštích 24 hodin
+    fig.add_vrect(
+        x0=now, x1=now + pd.Timedelta(hours=24),
+        fillcolor=COLOR_SURPLUS, opacity=0.04, layer="below", line_width=0,
+    )
+
+    new_keys = (changes or {}).get("new", set())
+
+    for _, r in sub.iterrows():
+        key = (r["unit_raw"], r["outage_start"], r["outage_end"])
+        is_new   = key in new_keys
+        bar_color = COLOR_NEW if is_new else pct_to_color(r.get("available_pct", 0))
+        border    = dict(width=2, color=COLOR_NEW) if is_new \
+                    else dict(width=0.5, color="rgba(0,0,0,0.15)")
+        y_label  = f"{r['unit_name']}  ({r['installed_MW']:.0f} MW)"
+        hover    = (
+            f"<b>{r['unit_name']}</b> [{level}]<br>"
+            f"Typ: {r['outage_type']}<br>"
+            f"Instalovaný: {r['installed_MW']:.0f} MW  |  "
+            f"Dostupný: {r['available_MW']:.0f} MW<br>"
+            f"<b>Výpadek: {r['unavailable_MW']:.0f} MW "
+            f"({100 - r['available_pct']:.0f} %)</b><br>"
+            f"Od: {r['outage_start'].strftime('%a %d.%m %H:%M')}  →  "
+            f"Do: {r['outage_end'].strftime('%a %d.%m %H:%M')}"
+            + ("  🆕 NOVÁ" if is_new else "")
+        )
+        duration_ms = (r["outage_end"] - r["outage_start"]).total_seconds() * 1000
+        fig.add_trace(go.Bar(
+            x=[duration_ms],
+            y=[y_label],
+            base=[r["outage_start"].timestamp() * 1000],
+            orientation="h",
+            marker_color=bar_color,
+            marker_line=border,
+            hovertext=hover, hoverinfo="text",
+            showlegend=False,
+            width=0.65,
+        ))
+
+    # Čára NOW
+    now_iso = now.isoformat()
+    fig.add_vline(x=now_iso, line_color=COLOR_SURPLUS, line_width=1.5)
+    fig.add_annotation(
+        x=now_iso, y=1, yref="paper", yanchor="bottom",
+        text="NOW", showarrow=False, xshift=4,
+        font=dict(size=10, color=COLOR_SURPLUS),
+    )
+
+    n_new = len(new_keys & set(sub[["unit_raw", "outage_start", "outage_end"]]
+                                .apply(tuple, axis=1)))
+    title = (
+        f"Odstávky {level} — {now.strftime('%d.%m.%Y %H:%M')}  |  "
+        f"Celkem: {n_units} jednotek  |  "
+        f"Výpadek: {sub['unavailable_MW'].sum():.0f} MW celkem"
+        + (f"  |  🆕 {n_new} nových" if n_new else "")
+    )
+
+    fig.update_layout(
+        height=height,
+        title_text=title,
+        barmode="overlay",
+        template="plotly_white",
+        hovermode="closest",
+        margin=dict(l=200, r=20, t=50, b=40),
+        xaxis=dict(
+            type="date",
+            tickformat="%a %d.%m\n%H:%M",
+            range=[xstart.isoformat(), xend.isoformat()],
+        ),
+        yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
+    )
+    fig.show()
+
+
+def print_outage_summary(df_out: pd.DataFrame, changes: dict = None):
+    """Textový výpis největších odstávek + případné změny od posledního refreshe."""
+    if df_out.empty:
+        print("  Žádné odstávky.\n")
+        return
+    sep = "─" * 72
+    print(sep)
+    total_mw = df_out["unavailable_MW"].sum()
+    print(f"  ODSTÁVKY — celkem výpadek: {total_mw:.0f} MW  "
+          f"({len(df_out)} záznamů, {df_out['unit_name'].nunique()} jednotek)")
+    print(sep)
+    top = df_out.nlargest(8, "unavailable_MW")
+    for _, r in top.iterrows():
+        print(
+            f"  [{r['unit_level']}] {r['unit_name']:<30s}  "
+            f"{r['unavailable_MW']:>6.0f} MW výpadek  "
+            f"({r['available_pct']:.0f}% dostupné)  "
+            f"do {r['outage_end'].strftime('%d.%m %H:%M')}"
+        )
+    if changes:
+        n_new    = len(changes.get("new", set()))
+        n_ended  = len(changes.get("ended", set()))
+        changed  = changes.get("changed_mw", pd.DataFrame())
+        if n_new or n_ended or not changed.empty:
+            print(sep)
+            print(f"  ZMĚNY: 🆕 {n_new} nových  |  ✅ {n_ended} ukončených  "
+                  f"|  ✏️ {len(changed)} se změněným výkonem")
+            if not changed.empty:
+                for _, row in changed.iterrows():
+                    print(f"    {row['unit_name']}: {row['prev_MW']:.0f} → "
+                          f"{row['available_MW']:.0f} MW  (Δ {row['delta_MW']:+.0f} MW)")
+    print(sep)
+
+# ── KONEC: 12_plot_outages ──────────────────────────────────────
+
+
 # ── BLOK: 10_loop ───────────────────────────────────────────────
 # SPUSŤ JAKO POSLEDNÍ — zastaví se přes tlačítko ■ Stop
+#
+# Přepínače — uprav dle potřeby:
+SHOW_GENERATION  = True   # stacked area generace
+SHOW_LOAD        = True   # zatížení vs. prognóza
+SHOW_OUTAGES     = True   # Gantt odstávky (pomalejší API)
+#
+# Pomalejší zdroje se refreshují méně často:
+SLOW_REFRESH_EVERY = 5    # každých N iterací (generace, zatížení, odstávky)
+
 print("Spoustim monitor (refresh " + str(REFRESH_SEC) + "s). Zastav tlacitkem Stop.")
 
-iteration = 0
+iteration    = 0
+df_out_prev  = None
+df_out_cache = pd.DataFrame()
+df_gen_cache = pd.DataFrame()
+load_act_cache = pd.Series(dtype="float64", name="actual_MW")
+load_fc_cache  = pd.Series(dtype="float64", name="forecast_MW")
+
 while True:
     try:
         df_entsoe, now = fetch_entsoe()
@@ -469,11 +971,51 @@ while True:
         except Exception as e:
             dg_err_msg = str(e)
 
+        # Pomalejší zdroje — refresh každých SLOW_REFRESH_EVERY iterací
+        if iteration % SLOW_REFRESH_EVERY == 0:
+            if SHOW_GENERATION:
+                try:
+                    df_gen_cache = fetch_generation(now)
+                except Exception as e:
+                    print(f"  [WARN] Generace: {e}")
+
+            if SHOW_LOAD:
+                try:
+                    load_act_cache, load_fc_cache = fetch_load(now)
+                except Exception as e:
+                    print(f"  [WARN] Zatížení: {e}")
+
+            if SHOW_OUTAGES:
+                try:
+                    raw_out    = fetch_outages(now)
+                    df_out_new = parse_outages(raw_out)
+                    if not df_out_new.empty:
+                        changes      = detect_changes(df_out_prev, df_out_new)
+                        df_out_prev  = df_out_cache.copy() if not df_out_cache.empty else None
+                        df_out_cache = df_out_new
+                    else:
+                        changes = None
+                except Exception as e:
+                    print(f"  [WARN] Odstávky: {e}")
+                    changes = None
+            else:
+                changes = None
+
         clear_output(wait=True)
 
+        # ── Grafy odchylka + DAP ──
         plot_entsoe(df_entsoe, now)
         plot_dap(s_d0, s_d1, now)
 
+        # ── Generace ──
+        if SHOW_GENERATION and not df_gen_cache.empty:
+            plot_generation(df_gen_cache, now)
+
+        # ── Zatížení ──
+        if SHOW_LOAD and (not load_act_cache.empty or not load_fc_cache.empty):
+            plot_load(load_act_cache, load_fc_cache, now)
+
+        # ── Delta Green ──
         if dg_ok:
             plot_deltagreen(df1_dg, df2_dg)
             print_snapshot(df_entsoe, df1_dg, df2_dg)
@@ -484,11 +1026,21 @@ while True:
             out.index = out.index.strftime("%d.%m %H:%M")
             print(out.to_string())
 
+        # ── Odstávky ──
+        if SHOW_OUTAGES and not df_out_cache.empty:
+            plot_outages(df_out_cache, now, level="PU", changes=changes)
+            plot_outages(df_out_cache, now, level="GU", changes=changes)
+            print_outage_summary(df_out_cache, changes)
+
         iteration += 1
-        print("\n#" + str(iteration) + " | " + now.strftime("%H:%M:%S") +
-              " | D0: " + str(len(s_d0)) + " ISP" +
-              " | D+1: " + str(len(s_d1)) + " ISP" +
-              " | refresh za " + str(REFRESH_SEC) + "s")
+        slow_next = SLOW_REFRESH_EVERY - (iteration % SLOW_REFRESH_EVERY)
+        print(
+            "\n#" + str(iteration) + " | " + now.strftime("%H:%M:%S") +
+            " | D0: " + str(len(s_d0)) + " ISP" +
+            " | D+1: " + str(len(s_d1)) + " ISP" +
+            f" | pomalý refresh za {slow_next} it." +
+            " | refresh za " + str(REFRESH_SEC) + "s"
+        )
         time.sleep(REFRESH_SEC)
 
     except KeyboardInterrupt:
