@@ -501,9 +501,9 @@ def fig_signal(df_imbal, now, height=110):
         return _base_layout(fig, height=height)
     start = now.normalize()
     for sig, color, val in [
-        ("DISCHARGE", C_DEFICIT,  -1),
-        ("CHARGE",    C_SURPLUS,   1),
-        ("STANDBY",   C_MUTED,   0.1),
+        ("DISCHARGE", "#E65100", -1),
+        ("CHARGE",    "#2E7D32",  1),
+        ("STANDBY",   "#9E9E9E",  0),
     ]:
         mask = df_imbal["signal"] == sig
         if mask.any():
@@ -521,7 +521,7 @@ def fig_signal(df_imbal, now, height=110):
         margin=dict(l=65, r=15, t=10, b=45),
         xaxis=dict(type="date", tickformat="%H:%M",
                    range=[start.isoformat(), now.isoformat()], gridcolor=C_GRID),
-        yaxis=dict(tickvals=[-1, 0.1, 1], ticktext=["DISCHARGE", "STANDBY", "CHARGE"],
+        yaxis=dict(tickvals=[-1, 0, 1], ticktext=["DISCHARGE", "STANDBY", "CHARGE"],
                    gridcolor=C_GRID),
     )
     return fig
@@ -1064,6 +1064,13 @@ with tab_dash:
     st.plotly_chart(fig_imbalance(df_imbal, now), use_container_width=True,
                     config={"displayModeBar": False})
 
+    st.markdown('<div class="section-title">Signál pro řízení flexibility (Delta Green API)</div>',
+                unsafe_allow_html=True)
+    st.caption(
+        "🟠 DISCHARGE = vybíjej baterii / pusť přetoky FVE do sítě &nbsp;·&nbsp; "
+        "🟢 CHARGE = nabíjej baterii / zastav přetoky FVE &nbsp;·&nbsp; "
+        "⚪ STANDBY = bez zásahu (odchylka v toleranci ±50 MWh)"
+    )
     st.plotly_chart(fig_signal(df_imbal, now), use_container_width=True,
                     config={"displayModeBar": False})
 
