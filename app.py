@@ -709,9 +709,9 @@ def fig_wind_solar_forecast(ws, now, height=240):
     fig = go.Figure()
     if ws.empty:
         return _base_layout(fig, height=height)
-    day_start = now.normalize()
-    day_end   = day_start + pd.Timedelta(days=2)
-    ws_slice  = ws[(ws.index >= day_start) & (ws.index < day_end)]
+    start_fc = now.normalize()
+    end_fc   = start_fc + pd.Timedelta(days=2)
+    ws_slice = ws[(ws.index >= start_fc) & (ws.index < end_fc)]
     colors = {"B16": ("#F9A825", "Solární prognóza"), "B19": ("#29B6F6", "Vítr onshore prognóza")}
     for col in ws_slice.columns:
         psr = str(col[0]) if isinstance(col, tuple) else str(col)
@@ -727,9 +727,16 @@ def fig_wind_solar_forecast(ws, now, height=240):
             ))
     _now_marker(fig, now)
     _base_layout(fig, height=height)
-    fig.update_xaxes(tickformat="%H:%M\n%d.%m", range=[day_start.isoformat(), day_end.isoformat()])
     fig.update_yaxes(title_text="MW")
-    fig.update_layout(hovermode="x unified")
+    fig.update_layout(
+        hovermode="x unified",
+        xaxis=dict(
+            type="date",
+            tickformat="%a %d.%m\n%H:%M",
+            range=[start_fc.isoformat(), end_fc.isoformat()],
+            gridcolor="#f0f0f0",
+        ),
+    )
     return fig
 
 
@@ -757,25 +764,8 @@ def render_mix_legend(df_gen) -> str:
     return f'<div class="mix-legend">{"".join(rows)}</div>'
 
 
-def fig_load(load_actual, load_fc, now, df_gen=None, height=280):
+def fig_load(load_actual, load_fc, now, height=280):
     fig = go.Figure()
-    # Generace — stacked area pod křivkami zatížení
-    if df_gen is not None and not df_gen.empty:
-        cols = list(df_gen.columns)
-        def _key(c):
-            psr = str(c[0]) if isinstance(c, tuple) else str(c)
-            return GEN_STACK_ORDER.index(psr) if psr in GEN_STACK_ORDER else 999
-        for col in sorted(cols, key=_key):
-            name, color = psr_lookup(col)
-            series = df_gen[col].fillna(0)
-            if series.sum() < 1:
-                continue
-            r = int(color[1:3], 16); g = int(color[3:5], 16); b = int(color[5:7], 16)
-            fig.add_trace(go.Scatter(
-                x=series.index, y=series.values, stackgroup="gen", name=name,
-                line=dict(width=0, color=color), fillcolor=f"rgba({r},{g},{b},0.65)",
-                hovertemplate=f"{name}: %{{y:.0f}} MW<extra></extra>",
-            ))
     if not load_fc.empty:
         fig.add_trace(go.Scatter(
             x=load_fc.index, y=load_fc.values, mode="lines",
@@ -785,13 +775,13 @@ def fig_load(load_actual, load_fc, now, df_gen=None, height=280):
     if not load_actual.empty:
         fig.add_trace(go.Scatter(
             x=load_actual.index, y=load_actual.values, mode="lines",
-            name="Skutečnost", line=dict(color="#212121", width=2.5, shape="hv"),
+            name="Skutečnost", line=dict(color="#E91E63", width=2, shape="hv"),
             hovertemplate="<b>%{x|%a %d.%m %H:%M}</b><br>Skutečnost: %{y:,.0f} MW<extra></extra>",
         ))
     _now_marker(fig, now)
     _base_layout(fig, height=height)
     fig.update_xaxes(tickformat="%H:%M\n%d.%m")
-    fig.update_yaxes(title_text="MW")
+    fig.update_yaxes(title_text="Zatížení (MW)")
     fig.update_layout(hovermode="x unified")
     return fig
 
@@ -1362,15 +1352,13 @@ with tab_dash:
     st.plotly_chart(fig_activation_prices(df_act, now), use_container_width=True,
                     config={"displayModeBar": False})
 
-    st.markdown('<div class="section-title">Zatížení vs. Generace [MW] | D0 + D+1</div>',
+    st.markdown('<div class="section-title">Zatížení — skutečnost vs. prognóza D+1</div>',
                 unsafe_allow_html=True)
     if load_actual.empty and load_fc.empty:
         st.info("Data zatížení nejsou dostupná.")
     else:
-        st.plotly_chart(
-            fig_load(load_actual, load_fc, now, df_gen=gen_raw),
-            use_container_width=True, config={"displayModeBar": False},
-        )
+        st.plotly_chart(fig_load(load_actual, load_fc, now), use_container_width=True,
+                        config={"displayModeBar": False})
 
     st.markdown('<div class="section-title">Prognóza výroby: Vítr & Solár | D0 + D+1</div>',
                 unsafe_allow_html=True)
