@@ -19,6 +19,7 @@
 # ║  12_plot_outages   → Gantt chart + detekce změn              ║
 # ║  13_fetch_generation → výroba podle zdroje                   ║
 # ║  14_fetch_load       → zatížení skutečnost vs. prognóza      ║
+# ║  15_fetch_reserves   → aFRR + mFRR rezervy a ceny            ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 
@@ -690,6 +691,93 @@ def plot_load(load_actual: pd.Series, load_fc: pd.Series, now: pd.Timestamp):
 # ── KONEC: 14_fetch_load ────────────────────────────────────────
 
 
+# ── BLOK: 15_fetch_reserves ─────────────────────────────────────
+def fetch_reserves(now: pd.Timestamp) -> dict:
+    start    = now.normalize()
+    end      = now.normalize() + pd.Timedelta(days=10)
+    start_yr = pd.Timestamp("2026-01-01", tz="Europe/Prague")
+    end_yr   = pd.Timestamp("2026-07-01", tz="Europe/Prague")
+
+    def _q(fn, pt, ma, s, e):
+        try:
+            r = fn(country_code="CZ", start=s, end=e,
+                   process_type=pt, type_marketagreement_type=ma)
+            return r if r is not None else pd.DataFrame()
+        except Exception as ex:
+            print(f"  [WARN] rezervy {pt}/{ma}: {ex}")
+            return pd.DataFrame()
+
+    return dict(
+        afrr_d_amt = _q(client.query_contracted_reserve_amount, "A51","A01", start, end),
+        afrr_d_pri = _q(client.query_contracted_reserve_prices,  "A51","A01", start, end),
+        afrr_y_amt = _q(client.query_contracted_reserve_amount, "A51","A04", start_yr, end_yr),
+        afrr_y_pri = _q(client.query_contracted_reserve_prices,  "A51","A04", start_yr, end_yr),
+        mfrr_d_amt = _q(client.query_contracted_reserve_amount, "A52","A01", start, end),
+        mfrr_d_pri = _q(client.query_contracted_reserve_prices,  "A52","A01", start, end),
+        start=start, end=end,
+    )
+
+
+def plot_reserves(reserves: dict, now: pd.Timestamp):
+    start   = reserves["start"]
+    end     = reserves["end"]
+    now_iso = now.isoformat()
+    xaxis   = dict(type="date", tickformat="%a %d.%m",
+                   range=[start.isoformat(), end.isoformat()],
+                   gridcolor="#E8EAED")
+
+    def s(df, *kws):
+        """Vytáhni první odpovídající sloupec jako Series."""
+        if df is None or (hasattr(df, "empty") and df.empty):
+            return pd.Series(dtype=float)
+        for kw in kws:
+            hits = [c for c in df.columns if kw.lower() in str(c).lower()]
+            if hits:
+                return df[hits[0]].dropna().tz_convert("Europe/Prague")
+        return df.iloc[:, 0].dropna().tz_convert("Europe/Prague") if len(df.columns) else pd.Series(dtype=float)
+
+    traces_amt = [
+        (s(reserves["afrr_d_amt"], "up"),   "aFRR denní Up ↑",  "#1565C0", "solid"),
+        (s(reserves["afrr_d_amt"], "down"), "aFRR denní Down ↓","#C62828", "solid"),
+        (s(reserves["afrr_y_amt"], "up"),   "aFRR roční Up ↑",  "#42A5F5", "dash"),
+        (s(reserves["afrr_y_amt"], "down"), "aFRR roční Down ↓","#EF5350", "dash"),
+        (s(reserves["mfrr_d_amt"], "sym"),  "mFRR denní Sym",   "#2E7D32", "solid"),
+    ]
+    traces_pri = [
+        (s(reserves["afrr_d_pri"], "up"),   "aFRR denní Up ↑",  "#1565C0", "solid"),
+        (s(reserves["afrr_d_pri"], "down"), "aFRR denní Down ↓","#C62828", "solid"),
+        (s(reserves["afrr_y_pri"], "up"),   "aFRR roční Up ↑",  "#42A5F5", "dash"),
+        (s(reserves["afrr_y_pri"], "down"), "aFRR roční Down ↓","#EF5350", "dash"),
+        (s(reserves["mfrr_d_pri"], "sym"),  "mFRR denní Sym",   "#2E7D32", "solid"),
+    ]
+
+    for traces, title, yunit in [
+        (traces_amt, "Rezervy — objemy",  "MW"),
+        (traces_pri, "Rezervy — ceny",    "EUR/MW"),
+    ]:
+        fig = go.Figure()
+        for series, name, color, dash in traces:
+            if series.empty:
+                continue
+            fig.add_trace(go.Scatter(
+                x=series.index, y=series.values, name=name, mode="lines",
+                line=dict(color=color, width=2, dash=dash),
+                hovertemplate=f"{name}: %{{y:,.2f}} {yunit}<extra></extra>",
+            ))
+        fig.add_vline(x=now_iso, line_color="#1565C0", line_width=1.5)
+        fig.update_layout(
+            height=380,
+            title_text=f"{title} [{yunit}] — D-7 až D+10",
+            template="plotly_white", hovermode="x unified",
+            legend=dict(orientation="h", y=-0.25, x=0, font=dict(size=10)),
+            margin=dict(l=65, r=20, t=45, b=80),
+            xaxis=xaxis,
+            yaxis=dict(title_text=yunit, gridcolor="#E8EAED"),
+        )
+        fig.show()
+# ── KONEC: 15_fetch_reserves ────────────────────────────────────
+
+
 # ── BLOK: 11_fetch_outages ──────────────────────────────────────
 def fetch_outages(now: pd.Timestamp, days_ahead: int = 7) -> pd.DataFrame:
     """
@@ -945,6 +1033,7 @@ def print_outage_summary(df_out: pd.DataFrame, changes: dict = None):
 SHOW_GENERATION  = True   # stacked area generace
 SHOW_LOAD        = True   # zatížení vs. prognóza
 SHOW_OUTAGES     = True   # Gantt odstávky (pomalejší API)
+SHOW_RESERVES    = True   # aFRR + mFRR rezervy a ceny
 #
 # Pomalejší zdroje se refreshují méně často:
 SLOW_REFRESH_EVERY = 5    # každých N iterací (generace, zatížení, odstávky)
@@ -953,8 +1042,9 @@ print("Spoustim monitor (refresh " + str(REFRESH_SEC) + "s). Zastav tlacitkem St
 
 iteration    = 0
 df_out_prev  = None
-df_out_cache = pd.DataFrame()
-df_gen_cache = pd.DataFrame()
+df_out_cache   = pd.DataFrame()
+df_gen_cache   = pd.DataFrame()
+reserves_cache = {}
 load_act_cache = pd.Series(dtype="float64", name="actual_MW")
 load_fc_cache  = pd.Series(dtype="float64", name="forecast_MW")
 
@@ -984,6 +1074,12 @@ while True:
                     load_act_cache, load_fc_cache = fetch_load(now)
                 except Exception as e:
                     print(f"  [WARN] Zatížení: {e}")
+
+            if SHOW_RESERVES:
+                try:
+                    reserves_cache = fetch_reserves(now)
+                except Exception as e:
+                    print(f"  [WARN] Rezervy: {e}")
 
             if SHOW_OUTAGES:
                 try:
@@ -1025,6 +1121,10 @@ while True:
                               "signal","power_pct"]].tail(8).copy()
             out.index = out.index.strftime("%d.%m %H:%M")
             print(out.to_string())
+
+        # ── Rezervy ──
+        if SHOW_RESERVES and reserves_cache:
+            plot_reserves(reserves_cache, now)
 
         # ── Odstávky ──
         if SHOW_OUTAGES and not df_out_cache.empty:
