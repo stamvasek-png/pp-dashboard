@@ -726,7 +726,7 @@ def fig_ceps_dashboard(data: dict) -> go.Figure:
         subplot_titles=[
             "Systémová odchylka (MW) + Zatížení (MW) + Cena odchylky (CZK/MWh)",
             "Aktivace SVR — aFRR / mFRR (MW)",
-            "Přeshraniční toky ČR (MW)  —  kladné = export",
+            "Přeshraniční toky ČR (MW) — kladné = export",
             "Výroba podle zdroje (MW, 15min)",
             "OZE real-time — Vítr + Solar (MW)",
             "Frekvence sítě (Hz)",
@@ -734,17 +734,20 @@ def fig_ceps_dashboard(data: dict) -> go.Figure:
     )
 
     # Panel 1: Odchylka + Zatížení + Cena
+    # offsetgroup="p1" izoluje bary od jiných panelů
     if not df_imbal.empty:
         col = df_imbal.columns[0]
         surplus = df_imbal[col] >= 0
         fig.add_trace(go.Bar(
             x=df_imbal.index[surplus], y=df_imbal.loc[surplus, col],
             name="Surplus", marker_color=C_SURPLUS, opacity=0.8,
+            offsetgroup="p1",
             hovertemplate="%{x|%H:%M}  %{y:+.1f} MW<extra>Surplus</extra>",
         ), row=1, col=1)
         fig.add_trace(go.Bar(
             x=df_imbal.index[~surplus], y=df_imbal.loc[~surplus, col],
             name="Deficit", marker_color=C_DEFICIT, opacity=0.8,
+            offsetgroup="p1",
             hovertemplate="%{x|%H:%M}  %{y:+.1f} MW<extra>Deficit</extra>",
         ), row=1, col=1)
         if len(df_imbal) >= 5:
@@ -771,7 +774,7 @@ def fig_ceps_dashboard(data: dict) -> go.Figure:
         ), row=1, col=1)
     fig.add_hline(y=0, line_color="#9E9E9E", line_width=0.8, row=1, col=1)
 
-    # Panel 2: SVR aktivace
+    # Panel 2: SVR aktivace — Scatter místo Bar (izolace od globálního barmode)
     SVR_CFG = [
         ("aFRR+ [MW]", "#1565C0"), ("aFRR- [MW]", "#C62828"),
         ("mFRR+ [MW]", "#2E7D32"), ("mFRR- [MW]", "#E65100"),
@@ -780,13 +783,16 @@ def fig_ceps_dashboard(data: dict) -> go.Figure:
     if not df_svr.empty:
         for col, color in SVR_CFG:
             if col in df_svr.columns:
-                fig.add_trace(go.Bar(
+                dname = col.replace("[", "(").replace("]", ")")
+                fig.add_trace(go.Scatter(
                     x=df_svr.index, y=df_svr[col],
-                    name=col.replace(" [MW]", ""), marker_color=color, opacity=0.85,
-                    hovertemplate=f"{col}: %{{y:.2f}} MW<extra></extra>",
+                    name=dname, stackgroup="svr",
+                    line=dict(width=0, color=color),
+                    fillcolor=color,
+                    hovertemplate=f"{dname}: %{{y:.2f}} MW<extra></extra>",
                 ), row=2, col=1)
 
-    # Panel 3: Přeshraniční toky
+    # Panel 3: Přeshraniční toky — Bar s offsetgroup="p3" + base=0
     CB_CFG = [
         ("PSE Actual [MW]",    "#E53935", "PSE (Polsko)"),
         ("SEPS Actual [MW]",   "#FB8C00", "SEPS (Slovensko)"),
@@ -800,6 +806,7 @@ def fig_ceps_dashboard(data: dict) -> go.Figure:
                 fig.add_trace(go.Bar(
                     x=df_cb.index, y=df_cb[col],
                     name=label, marker_color=color, opacity=0.85,
+                    offsetgroup="p3", base=0,
                     hovertemplate=f"{label}: %{{y:+.0f}} MW<extra></extra>",
                 ), row=3, col=1)
         if "Net Export (MW)" in df_cb.columns:
