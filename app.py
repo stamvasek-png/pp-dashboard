@@ -705,27 +705,44 @@ def fig_generation_donut(df_gen, height=280):
     return fig
 
 
-def fig_wind_solar_forecast(ws, now, height=240):
+def fig_wind_solar_forecast(ws, now, gen_raw=None, height=240):
     fig = go.Figure()
-    if ws.empty:
-        return _base_layout(fig, height=height)
     start_fc = now.normalize()
     end_fc   = start_fc + pd.Timedelta(days=2)
-    ws_slice = ws[(ws.index >= start_fc) & (ws.index < end_fc)]
-    colors = {"B16": ("#F9A825", "Solární prognóza"), "B19": ("#29B6F6", "Vítr onshore prognóza")}
-    for col in ws_slice.columns:
-        psr = str(col[0]) if isinstance(col, tuple) else str(col)
-        if psr in colors:
-            hex_c, label = colors[psr]
-            r = int(hex_c[1:3], 16); g = int(hex_c[3:5], 16); b = int(hex_c[5:7], 16)
-            fill_c = f"rgba({r},{g},{b},0.6)"
-            series = ws_slice[col].fillna(0)
-            fig.add_trace(go.Scatter(
-                x=series.index, y=series.values, stackgroup="ws", name=label,
-                line=dict(width=0, color=hex_c), fillcolor=fill_c,
-                hovertemplate=f"{label}: %{{y:.0f}} MW<extra></extra>",
-            ))
-    _now_marker(fig, now)
+
+    # Solar forecast (B16) — D0 + D+1
+    if not ws.empty:
+        ws_slice = ws[(ws.index >= start_fc) & (ws.index < end_fc)]
+        for col in ws_slice.columns:
+            psr = str(col[0]) if isinstance(col, tuple) else str(col)
+            if psr == "B16":
+                series = ws_slice[col].fillna(0)
+                fig.add_trace(go.Scatter(
+                    x=series.index, y=series.values, stackgroup="solar", name="Solární prognóza",
+                    line=dict(width=0, color="#F9A825"), fillcolor="rgba(249,168,37,0.6)",
+                    hovertemplate="Solární prognóza: %{y:.0f} MW<extra></extra>",
+                ))
+
+    # Wind actual (B19) z query_generation — jen do now
+    if gen_raw is not None and not gen_raw.empty:
+        wind_col = next(
+            (c for c in gen_raw.columns
+             if (str(c[0]) if isinstance(c, tuple) else str(c)) == "B19"),
+            None,
+        )
+        if wind_col is not None:
+            wind = gen_raw[wind_col].dropna()
+            wind = wind[wind.index <= now]
+            if not wind.empty:
+                fig.add_trace(go.Scatter(
+                    x=wind.index, y=wind.values, mode="lines",
+                    name="Vítr onshore (skutečnost)",
+                    line=dict(color="#29B6F6", width=2, shape="hv"),
+                    hovertemplate="Vítr onshore: %{y:.0f} MW<extra></extra>",
+                ))
+
+    if fig.data:
+        _now_marker(fig, now)
     _base_layout(fig, height=height)
     fig.update_yaxes(title_text="MW")
     fig.update_layout(
@@ -1360,13 +1377,12 @@ with tab_dash:
         st.plotly_chart(fig_load(load_actual, load_fc, now), use_container_width=True,
                         config={"displayModeBar": False})
 
-    st.markdown('<div class="section-title">Prognóza výroby: Vítr & Solár | D0 + D+1</div>',
+    st.markdown('<div class="section-title">Forecast solární výroby [MW] | D0 + D+1</div>',
                 unsafe_allow_html=True)
-    if ws_raw.empty:
-        st.info("Data prognózy větru a solárů nejsou dostupná.")
-    else:
-        st.plotly_chart(fig_wind_solar_forecast(ws_raw, now), use_container_width=True,
-                        config={"displayModeBar": False})
+    st.plotly_chart(
+        fig_wind_solar_forecast(ws_raw, now, gen_raw=gen_raw),
+        use_container_width=True, config={"displayModeBar": False},
+    )
 
     st.markdown('<div class="section-title">Generace podle zdroje · Aktuální mix</div>',
                 unsafe_allow_html=True)
