@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 from entsoe import EntsoePandasClient
+from zeep import Client as SoapClient
 
 # ── PAGE CONFIG ─────────────────────────────────────────────────
 st.set_page_config(
@@ -174,6 +175,13 @@ def _get_client():
     return EntsoePandasClient(api_key=ENTSOE_TOKEN)
 
 client = _get_client()
+
+# ── ČEPS SOAP CLIENT ─────────────────────────────────────────────
+@st.cache_resource
+def _get_ceps_client():
+    return SoapClient(wsdl="https://www.ceps.cz/_layouts/CepsData.asmx?WSDL")
+
+ceps = _get_ceps_client()
 
 # ── SESSION STATE ────────────────────────────────────────────────
 for key, default in [
@@ -365,6 +373,63 @@ def fetch_activation_prices():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_ceps_imbalance():
+    """Systémová odchylka ČR z ČEPS — minutová, ~5min zpoždění."""
+    NS    = "https://www.ceps.cz/CepsData/StructuredData/1.0"
+    now   = pd.Timestamp.now(tz="Europe/Prague")
+    start = now.normalize()
+    try:
+        result = ceps.service.AktualniSystemovaOdchylkaCR(
+            dateFrom  =start.to_pydatetime().replace(tzinfo=None),
+            dateTo    =now.to_pydatetime().replace(tzinfo=None),
+            agregation="MI",
+            function  ="AVG",
+        )
+        rows = []
+        for item in result.findall(f"{{{NS}}}data/{{{NS}}}item"):
+            rows.append({
+                "time":        pd.Timestamp(item.get("date")).tz_convert("Europe/Prague"),
+                "odchylka_MW": float(item.get("value1", 0)),
+            })
+        df = pd.DataFrame(rows).set_index("time")
+        return df, now
+    except Exception:
+        return pd.DataFrame(), now
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_ceps_svr():
+    """Aktivace SVR v ČR z ČEPS — minutová, ~5min zpoždění."""
+    NS    = "https://www.ceps.cz/CepsData/StructuredData/1.0"
+    now   = pd.Timestamp.now(tz="Europe/Prague")
+    start = now.normalize()
+    SERIES = {
+        "value1": "aFRR+ [MW]",
+        "value2": "aFRR- [MW]",
+        "value3": "mFRR+ [MW]",
+        "value4": "mFRR- [MW]",
+        "value7": "mFRR5 [MW]",
+    }
+    try:
+        result = ceps.service.AktivaceSVRvCR(
+            dateFrom  =start.to_pydatetime().replace(tzinfo=None),
+            dateTo    =now.to_pydatetime().replace(tzinfo=None),
+            agregation="MI",
+            function  ="AVG",
+            param1    ="all",
+        )
+        rows = []
+        for item in result.findall(f"{{{NS}}}data/{{{NS}}}item"):
+            row = {"time": pd.Timestamp(item.get("date")).tz_convert("Europe/Prague")}
+            for vid, name in SERIES.items():
+                row[name] = float(item.get(vid, 0))
+            rows.append(row)
+        return pd.DataFrame(rows).set_index("time")
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def fetch_wind_solar_forecast():
     now       = pd.Timestamp.now(tz="Europe/Prague")
@@ -535,6 +600,77 @@ def sparkline_svg(values, color="#1565C0", width=140, height=28):
 
 
 # ── GRAFY ────────────────────────────────────────────────────────
+def fig_ceps_imbalance(df: pd.DataFrame, now: pd.Timestamp, height=280):
+    """Systémová odchylka ČR z ČEPS [MW], minutová granularita."""
+    fig = go.Figure()
+    if df.empty:
+        return _base_layout(fig, height=height)
+    surplus = df["odchylka_MW"] >= 0
+    fig.add_trace(go.Bar(
+        x=df.index[surplus], y=df.loc[surplus, "odchylka_MW"],
+        name="Surplus", marker_color=C_SURPLUS,
+        hovertemplate="%{x|%H:%M}  %{y:+.1f} MW<extra>Surplus</extra>",
+    ))
+    fig.add_trace(go.Bar(
+        x=df.index[~surplus], y=df.loc[~surplus, "odchylka_MW"],
+        name="Deficit", marker_color=C_DEFICIT,
+        hovertemplate="%{x|%H:%M}  %{y:+.1f} MW<extra>Deficit</extra>",
+    ))
+    if len(df) >= 5:
+        ma = df["odchylka_MW"].rolling(5, min_periods=1).mean()
+        fig.add_trace(go.Scatter(
+            x=df.index, y=ma, mode="lines", name="5min MA",
+            line=dict(color="#212121", width=1.5), hoverinfo="skip", opacity=0.7,
+        ))
+    fig.add_hline(y=0, line_color="#9E9E9E", line_width=0.8)
+    last = df["odchylka_MW"].iloc[-1]
+    fig.add_annotation(
+        x=df.index[-1], y=last,
+        text=f"<b>{last:+.1f} MW</b>",
+        showarrow=False, yshift=14 if last >= 0 else -14,
+        font=dict(size=12, color=C_SURPLUS if last >= 0 else C_DEFICIT),
+        bgcolor="rgba(255,255,255,.85)", borderpad=2,
+    )
+    _now_marker(fig, now)
+    _base_layout(fig, height=height)
+    fig.update_layout(
+        barmode="relative", bargap=0.05,
+        hovermode="x unified",
+        xaxis=dict(type="date", tickformat="%H:%M", gridcolor=C_GRID),
+        yaxis=dict(title_text="MW", gridcolor=C_GRID),
+    )
+    return fig
+
+
+def fig_ceps_svr(df: pd.DataFrame, now: pd.Timestamp, height=220):
+    """Aktivace SVR v ČR z ČEPS [MW]."""
+    fig = go.Figure()
+    if df.empty:
+        return _base_layout(fig, height=height)
+    colors = {
+        "aFRR+ [MW]": "#1565C0",
+        "aFRR- [MW]": "#C62828",
+        "mFRR+ [MW]": "#2E7D32",
+        "mFRR- [MW]": "#E65100",
+        "mFRR5 [MW]": "#7B1FA2",
+    }
+    for col in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df[col], name=col, mode="lines",
+            line=dict(color=colors.get(col, "#9E9E9E"), width=1.5),
+            hovertemplate=f"{col}: %{{y:.2f}} MW<extra></extra>",
+        ))
+    fig.add_hline(y=0, line_color="#9E9E9E", line_width=0.8)
+    _now_marker(fig, now)
+    _base_layout(fig, height=height)
+    fig.update_layout(
+        hovermode="x unified",
+        xaxis=dict(type="date", tickformat="%H:%M", gridcolor=C_GRID),
+        yaxis=dict(title_text="MW", gridcolor=C_GRID),
+    )
+    return fig
+
+
 def fig_imbalance(df, now, load_actual=None, load_fc=None, height=290):
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     if df.empty:
@@ -1421,7 +1557,22 @@ tab_dash, tab_out, tab_dap, tab_rezervy, tab_dg, tab_data = st.tabs([
 
 # ──────────── TAB 1: ODCHYLKA + GENERACE ─────────────────────────
 with tab_dash:
-    st.markdown('<div class="section-title">Systémová odchylka</div>', unsafe_allow_html=True)
+    # ČEPS — primární, minutová, ~5min zpoždění
+    st.markdown('<div class="section-title">Systémová odchylka ČR — ČEPS (minutová, ~5min zpoždění)</div>',
+                unsafe_allow_html=True)
+    df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
+    st.plotly_chart(fig_ceps_imbalance(df_ceps_imbal, now_ceps),
+                    use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown('<div class="section-title">Aktivace SVR v ČR — ČEPS (minutová)</div>',
+                unsafe_allow_html=True)
+    df_svr = fetch_ceps_svr()
+    st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
+                    use_container_width=True, config={"displayModeBar": False})
+
+    # ENTSO-E — záložní, 15min granularita, obsahuje ceny
+    st.markdown('<div class="section-title">Imbalance ceny — ENTSO-E (15min)</div>',
+                unsafe_allow_html=True)
     st.plotly_chart(fig_imbalance(df_imbal, now, load_actual=load_actual, load_fc=load_fc),
                     use_container_width=True, config={"displayModeBar": False})
 

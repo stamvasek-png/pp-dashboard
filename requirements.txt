@@ -3,3 +3,4 @@ entsoe-py>=0.6.0
 pandas>=2.0.0
 plotly>=5.18.0
 requests>=2.31.0
+zeep>=4.2.0
