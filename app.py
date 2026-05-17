@@ -630,44 +630,92 @@ def sparkline_svg(values, color="#1565C0", width=140, height=28):
 
 
 # ── GRAFY ────────────────────────────────────────────────────────
-def fig_ceps_imbalance(df: pd.DataFrame, now: pd.Timestamp, height=280):
-    """Systémová odchylka ČR z ČEPS [MW], minutová granularita."""
-    fig = go.Figure()
-    if df.empty:
-        return _base_layout(fig, height=height)
-    surplus = df["odchylka_MW"] >= 0
-    fig.add_trace(go.Bar(
-        x=df.index[surplus], y=df.loc[surplus, "odchylka_MW"],
-        name="Surplus", marker_color=C_SURPLUS,
-        hovertemplate="%{x|%H:%M}  %{y:+.1f} MW<extra>Surplus</extra>",
-    ))
-    fig.add_trace(go.Bar(
-        x=df.index[~surplus], y=df.loc[~surplus, "odchylka_MW"],
-        name="Deficit", marker_color=C_DEFICIT,
-        hovertemplate="%{x|%H:%M}  %{y:+.1f} MW<extra>Deficit</extra>",
-    ))
-    if len(df) >= 5:
-        ma = df["odchylka_MW"].rolling(5, min_periods=1).mean()
+def fig_ceps_combined(df_imbal: pd.DataFrame, df_price: pd.DataFrame,
+                      load_actual, load_fc, now: pd.Timestamp, height=320):
+    """
+    Kombinovaný graf ČEPS:
+    - Bary: minutová odchylka [MW] — osa Y vlevo
+    - Křivky: zatížení skutečnost + prognóza [MW] — osa Y2 vpravo
+    - Křivka: odhadovaná cena odchylky [CZK/MWh] — osa Y3 vpravo (volná)
+    """
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Odchylka (bary, primární osa)
+    if not df_imbal.empty:
+        surplus = df_imbal["odchylka_MW"] >= 0
+        fig.add_trace(go.Bar(
+            x=df_imbal.index[surplus], y=df_imbal.loc[surplus, "odchylka_MW"],
+            name="Surplus", marker_color=C_SURPLUS, opacity=0.8,
+            hovertemplate="%{x|%H:%M}  %{y:+.1f} MW<extra>Surplus</extra>",
+        ), secondary_y=False)
+        fig.add_trace(go.Bar(
+            x=df_imbal.index[~surplus], y=df_imbal.loc[~surplus, "odchylka_MW"],
+            name="Deficit", marker_color=C_DEFICIT, opacity=0.8,
+            hovertemplate="%{x|%H:%M}  %{y:+.1f} MW<extra>Deficit</extra>",
+        ), secondary_y=False)
+        if len(df_imbal) >= 5:
+            ma = df_imbal["odchylka_MW"].rolling(5, min_periods=1).mean()
+            fig.add_trace(go.Scatter(
+                x=df_imbal.index, y=ma, mode="lines", name="5min MA",
+                line=dict(color="#212121", width=1.5), hoverinfo="skip", opacity=0.7,
+            ), secondary_y=False)
+        fig.add_hline(y=0, line_color="#9E9E9E", line_width=0.8)
+        last = df_imbal["odchylka_MW"].iloc[-1]
+        fig.add_annotation(
+            x=df_imbal.index[-1], y=last,
+            text=f"<b>{last:+.1f} MW</b>",
+            showarrow=False, yshift=14 if last >= 0 else -14,
+            font=dict(size=11, color=C_SURPLUS if last >= 0 else C_DEFICIT),
+            bgcolor="rgba(255,255,255,.85)", borderpad=2,
+        )
+
+    # Zatížení (křivky, sekundární osa Y2)
+    day_start = now.normalize()
+    if load_fc is not None and not load_fc.empty:
+        s = load_fc[load_fc.index >= day_start]
+        if not s.empty:
+            fig.add_trace(go.Scatter(
+                x=s.index, y=s.values, mode="lines", name="Prognóza zatížení",
+                line=dict(color="#26A69A", width=1.5, dash="dot"),
+                hovertemplate="Prognóza: %{y:,.0f} MW<extra></extra>",
+            ), secondary_y=True)
+    if load_actual is not None and not load_actual.empty:
+        s = load_actual[(load_actual.index >= day_start) & (load_actual.index <= now)]
+        if not s.empty:
+            fig.add_trace(go.Scatter(
+                x=s.index, y=s.values, mode="lines", name="Zatížení skutečnost",
+                line=dict(color="#E91E63", width=1.5),
+                hovertemplate="Zatížení: %{y:,.0f} MW<extra></extra>",
+            ), secondary_y=True)
+
+    # Cena odchylky (přerušovaná fialová, osa Y3)
+    if not df_price.empty:
         fig.add_trace(go.Scatter(
-            x=df.index, y=ma, mode="lines", name="5min MA",
-            line=dict(color="#212121", width=1.5), hoverinfo="skip", opacity=0.7,
+            x=df_price.index, y=df_price["cena_CZK_MWh"],
+            mode="lines+markers", name="Cena odchylky [CZK/MWh]",
+            line=dict(color="#7B1FA2", width=2, shape="hv", dash="dash"),
+            hovertemplate="%{x|%H:%M}  %{y:,.0f} CZK/MWh<extra></extra>",
+            yaxis="y3",
         ))
-    fig.add_hline(y=0, line_color="#9E9E9E", line_width=0.8)
-    last = df["odchylka_MW"].iloc[-1]
-    fig.add_annotation(
-        x=df.index[-1], y=last,
-        text=f"<b>{last:+.1f} MW</b>",
-        showarrow=False, yshift=14 if last >= 0 else -14,
-        font=dict(size=12, color=C_SURPLUS if last >= 0 else C_DEFICIT),
-        bgcolor="rgba(255,255,255,.85)", borderpad=2,
-    )
+
     _now_marker(fig, now)
     _base_layout(fig, height=height)
     fig.update_layout(
         barmode="relative", bargap=0.05,
         hovermode="x unified",
-        xaxis=dict(type="date", tickformat="%H:%M", gridcolor=C_GRID),
-        yaxis=dict(title_text="MW", gridcolor=C_GRID),
+        xaxis=dict(
+            type="date", tickformat="%H:%M\n%d.%m",
+            range=[day_start.isoformat(),
+                   (day_start + pd.Timedelta(days=2)).isoformat()],
+            gridcolor=C_GRID,
+        ),
+        yaxis =dict(title_text="MW (odchylka)", gridcolor=C_GRID),
+        yaxis2=dict(title_text="MW (zatížení)", overlaying="y",
+                    side="right", showgrid=False),
+        yaxis3=dict(title_text="CZK/MWh", overlaying="y",
+                    side="right", position=0.97, showgrid=False,
+                    anchor="free"),
+        legend=dict(orientation="h", y=-0.25, x=0, font=dict(size=10)),
     )
     return fig
 
@@ -1630,29 +1678,20 @@ tab_dash, tab_out, tab_dap, tab_rezervy, tab_dg, tab_data = st.tabs([
 
 # ──────────── TAB 1: ODCHYLKA + GENERACE ─────────────────────────
 with tab_dash:
-    # ČEPS — primární, minutová, ~5min zpoždění
-    st.markdown('<div class="section-title">Systémová odchylka ČR — ČEPS (minutová, ~5min zpoždění)</div>',
+    # ČEPS — kombinovaný graf: odchylka + zatížení + cena odchylky
+    st.markdown('<div class="section-title">Systémová odchylka + zatížení + cena odchylky — ČEPS</div>',
                 unsafe_allow_html=True)
     df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
-    st.plotly_chart(fig_ceps_imbalance(df_ceps_imbal, now_ceps),
-                    use_container_width=True, config={"displayModeBar": False})
+    df_ceps_price = fetch_ceps_imbalance_price()
+    st.plotly_chart(
+        fig_ceps_combined(df_ceps_imbal, df_ceps_price, load_actual, load_fc, now_ceps),
+        use_container_width=True, config={"displayModeBar": False},
+    )
 
     st.markdown('<div class="section-title">Aktivace SVR v ČR — ČEPS (minutová)</div>',
                 unsafe_allow_html=True)
     df_svr = fetch_ceps_svr()
     st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
-                    use_container_width=True, config={"displayModeBar": False})
-
-    st.markdown('<div class="section-title">Odhadovaná cena odchylky — ČEPS [CZK/MWh]</div>',
-                unsafe_allow_html=True)
-    df_ceps_price = fetch_ceps_imbalance_price()
-    st.plotly_chart(fig_ceps_imbalance_price(df_ceps_price, now_ceps),
-                    use_container_width=True, config={"displayModeBar": False})
-
-    # ENTSO-E — záložní, 15min granularita, obsahuje ceny
-    st.markdown('<div class="section-title">Imbalance ceny — ENTSO-E (15min)</div>',
-                unsafe_allow_html=True)
-    st.plotly_chart(fig_imbalance(df_imbal, now, load_actual=load_actual, load_fc=load_fc),
                     use_container_width=True, config={"displayModeBar": False})
 
     st.markdown('<div class="section-title">Signál pro řízení flexibility (Delta Green API)</div>',
