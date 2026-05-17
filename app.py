@@ -1693,15 +1693,45 @@ with tab_dash:
     st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
                     use_container_width=True, config={"displayModeBar": False})
 
-    st.markdown('<div class="section-title">Signál pro řízení flexibility (Delta Green API)</div>',
-                unsafe_allow_html=True)
-    st.caption(
-        "🟠 DISCHARGE = vybíjej baterii / pusť přetoky FVE do sítě &nbsp;·&nbsp; "
-        "🟢 CHARGE = nabíjej baterii / zastav přetoky FVE &nbsp;·&nbsp; "
-        "⚪ STANDBY = bez zásahu (odchylka v toleranci ±50 MWh)"
+    # ── Balancing strategie ───────────────────────────────────────
+    st.markdown('<div class="section-title">Balancing strategie</div>', unsafe_allow_html=True)
+    st.info(
+        "ℹ️ Data systémové odchylky mají zpoždění ~15 min. "
+        "EMA (Exponential Moving Average) dává větší váhu posledním intervalům "
+        "a slouží jako proxy pro odhad aktuálního stavu soustavy. "
+        "Zákazníci v balancing segmentu pomáhají síti a jsou za to benefitováni."
     )
-    st.plotly_chart(fig_signal(df_imbal, now), use_container_width=True,
-                    config={"displayModeBar": False})
+    st.subheader("⚡ Balancing strategie (EMA predikce)")
+    _bc1, _bc2, _bc3 = st.columns(3)
+    with _bc1:
+        ema_periods = st.slider("EMA okno [ISP]", 1, 8, 4,
+                                help="Počet 5min intervalů pro EMA. 4 = 20 minut.")
+    with _bc2:
+        threshold_mw = st.slider("Práh zásahu [MWh]", 10, 150, 50,
+                                 help="Minimální predikovaná odchylka pro aktivaci signálu. "
+                                      "Vyšší = méně zásahů, nižší = agresivnější balancing.")
+    with _bc3:
+        benefit_eur_mwh = st.number_input("Benefit zákazníka [EUR/MWh]", value=8.0,
+                                          help="Kolik EUR/MWh zákazník vydělá za pomoc síti.")
+
+    if not df_ceps_imbal.empty:
+        imbal_5min = df_ceps_imbal["odchylka_MW"].resample("5min").mean().dropna()
+        _ema, _signal = balancing_strategy_ema(imbal_5min, ema_periods, threshold_mw)
+    elif not df_imbal.empty:
+        imbal_5min = df_imbal["odchylka_MWh"]
+        _ema, _signal = balancing_strategy_ema(imbal_5min, ema_periods, threshold_mw)
+    if not df_ceps_imbal.empty or not df_imbal.empty:
+        st.plotly_chart(
+            fig_balancing_strategy(df_imbal, _ema, _signal, threshold_mw, now),
+            use_container_width=True, config={"displayModeBar": False},
+        )
+        _n_int = int((_signal != "STANDBY").sum())
+        _benefit = _n_int * 0.25 * benefit_eur_mwh
+        _bm1, _bm2 = st.columns(2)
+        _bm1.metric("Počet zásahů dnes", _n_int)
+        _bm2.metric("Odhadovaný benefit zákazníka", f"{_benefit:.2f} EUR/den")
+    else:
+        st.info("Data odchylky nejsou dostupná.")
 
     st.markdown('<div class="section-title">Ceny aktivace záložních rezerv</div>',
                 unsafe_allow_html=True)
@@ -1756,45 +1786,6 @@ with tab_dash:
             use_container_width=True, config={"displayModeBar": False},
         )
 
-    # ── Balancing strategie ───────────────────────────────────────
-    st.markdown('<div class="section-title">Balancing strategie</div>', unsafe_allow_html=True)
-    st.info(
-        "ℹ️ Data systémové odchylky mají zpoždění ~15 min. "
-        "EMA (Exponential Moving Average) dává větší váhu posledním intervalům "
-        "a slouží jako proxy pro odhad aktuálního stavu soustavy. "
-        "Zákazníci v balancing segmentu pomáhají síti a jsou za to benefitováni."
-    )
-    st.subheader("⚡ Balancing strategie (EMA predikce)")
-    _bc1, _bc2, _bc3 = st.columns(3)
-    with _bc1:
-        ema_periods = st.slider("EMA okno [ISP]", 1, 8, 4,
-                                help="Počet 5min intervalů pro EMA. 4 = 20 minut.")
-    with _bc2:
-        threshold_mw = st.slider("Práh zásahu [MWh]", 10, 150, 50,
-                                 help="Minimální predikovaná odchylka pro aktivaci signálu. "
-                                      "Vyšší = méně zásahů, nižší = agresivnější balancing.")
-    with _bc3:
-        benefit_eur_mwh = st.number_input("Benefit zákazníka [EUR/MWh]", value=8.0,
-                                          help="Kolik EUR/MWh zákazník vydělá za pomoc síti.")
-
-    if not df_ceps_imbal.empty:
-        imbal_5min = df_ceps_imbal["odchylka_MW"].resample("5min").mean().dropna()
-        _ema, _signal = balancing_strategy_ema(imbal_5min, ema_periods, threshold_mw)
-    elif not df_imbal.empty:
-        imbal_5min = df_imbal["odchylka_MWh"]
-        _ema, _signal = balancing_strategy_ema(imbal_5min, ema_periods, threshold_mw)
-    if not df_ceps_imbal.empty or not df_imbal.empty:
-        st.plotly_chart(
-            fig_balancing_strategy(df_imbal, _ema, _signal, threshold_mw, now),
-            use_container_width=True, config={"displayModeBar": False},
-        )
-        _n_int = int((_signal != "STANDBY").sum())
-        _benefit = _n_int * 0.25 * benefit_eur_mwh
-        _bm1, _bm2 = st.columns(2)
-        _bm1.metric("Počet zásahů dnes", _n_int)
-        _bm2.metric("Odhadovaný benefit zákazníka", f"{_benefit:.2f} EUR/den")
-    else:
-        st.info("Data odchylky nejsou dostupná.")
 
 # ──────────── TAB 2: ODSTÁVKY ─────────────────────────────────────
 with tab_out:
