@@ -163,11 +163,18 @@ def fig_load(load_fc, ceps_load, ceps_gen, now, height=280):
             hovertemplate="Prognóza D+1: %{y:,.0f} MW<extra></extra>",
         ))
     if ceps_load is not None and not ceps_load.empty:
-        load_col = next(
-            (c for c in ceps_load.columns
-             if "load" in str(c).lower() or "zatížení" in str(c).lower()),
-            None,
-        )
+        # ČEPS Load columns: "Load [MW]", "Load including pumping [MW]"
+        # Czech equivalents: "Zatížení [MW]", "Zatížení vč. čerpání [MW]"
+        # Prefer pumping variant as it includes čerpání přečerpávacích elektráren
+        PREFERRED = ("Zatížení vč. čerpání [MW]", "Load including pumping [MW]",
+                     "Zatížení [MW]", "Load [MW]")
+        load_col = next((c for c in PREFERRED if c in ceps_load.columns), None)
+        if load_col is None:
+            load_col = next(
+                (c for c in ceps_load.columns
+                 if "load" in str(c).lower() or "zatížení" in str(c).lower()),
+                None,
+            )
         if load_col is None:
             num_cols = ceps_load.select_dtypes(include="number").columns
             load_col = num_cols[0] if len(num_cols) > 0 else None
