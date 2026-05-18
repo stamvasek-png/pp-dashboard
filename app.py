@@ -239,8 +239,16 @@ with tab_dash:
                 unsafe_allow_html=True)
     df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
     df_ceps_price = fetch_ceps_imbalance_price()
+    ceps_d = fetch_ceps_all()
+    _load_col = ("Load including pumping [MW]"
+                 if "Load including pumping [MW]" in ceps_d["load"].columns
+                 else "Load [MW]"
+                 if "Load [MW]" in ceps_d["load"].columns
+                 else None)
+    ceps_load_series = (ceps_d["load"][_load_col]
+                        if _load_col else pd.Series(dtype=float))
     st.plotly_chart(
-        fig_ceps_combined(df_ceps_imbal, df_ceps_price, load_actual, load_fc, now_ceps),
+        fig_ceps_combined(df_ceps_imbal, df_ceps_price, ceps_load_series, load_fc, now_ceps),
         use_container_width=True, config={"displayModeBar": False},
     )
 
@@ -296,14 +304,6 @@ with tab_dash:
 
     st.markdown('<div class="section-title">Zatížení — skutečnost vs. prognóza D+1</div>',
                 unsafe_allow_html=True)
-    ceps_d = fetch_ceps_all()
-    _load_col = ("Load including pumping [MW]"
-                 if "Load including pumping [MW]" in ceps_d["load"].columns
-                 else "Load [MW]"
-                 if "Load [MW]" in ceps_d["load"].columns
-                 else None)
-    ceps_load_series = (ceps_d["load"][_load_col]
-                        if _load_col else pd.Series(dtype=float))
     if load_fc.empty:
         st.info("Data zatížení nejsou dostupná.")
     else:
