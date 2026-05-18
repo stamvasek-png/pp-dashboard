@@ -5,4 +5,3 @@ plotly>=5.18.0
 requests>=2.31.0
 zeep>=4.2.0
 folium>=0.16.0
-streamlit-folium>=0.21.0

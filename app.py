@@ -93,23 +93,40 @@ with st.sidebar:
             help="Baterie drží aktuální SoC místo nabíjení/vybíjení pokud není jasný cenový signál")
 
     st.markdown("---")
-    st.markdown("### 🔵 Plyn")
-    show_gas = st.checkbox("Zobrazit plynovou sekci", value=False)
+    commodity = st.radio(
+        "Komodita",
+        options=["⚡ Elektřina", "🔵 Plyn"],
+        horizontal=True,
+        key="commodity",
+    )
+    show_gas = (commodity == "🔵 Plyn")
 
     st.markdown("---")
     st.markdown("### Zdroje dat")
-    st.caption(
-        "**ENTSO-E Transparency Platform**  \n"
-        "Odchylka · Ceny · Generace · Zatížení · Odstávky"
-    )
-    st.caption(
-        "**ČEPS API**  \n"
-        "Odchylka · Aktivace SVR · Cena odchylky (real-time)"
-    )
-    st.caption(
-        "**Delta Green API**  \n"
-        "Portfolio · Flexibilita (volitelné)"
-    )
+    if not show_gas:
+        st.caption(
+            "**ENTSO-E Transparency Platform**  \n"
+            "Odchylka · DAP ceny · Generace · Zatížení · Odstávky · Rezervy"
+        )
+        st.caption(
+            "**ČEPS API (SOAP)**  \n"
+            "Odchylka real-time · Zatížení · SVR aktivace · Cena odchylky · "
+            "Generace · Přeshraniční toky · Frekvence"
+        )
+        st.caption(
+            "**Delta Green API**  \n"
+            "Portfolio stav · Disponibilní flexibilita (volitelné)"
+        )
+    else:
+        st.caption(
+            "**ENTSO-G Transparency Platform**  \n"
+            "Fyzické toky · Hraniční přechody CZ · Denní data"
+        )
+        st.caption(
+            "**GIE AGSI+**  \n"
+            "Zásobníky plynu · CZ + EU · Injekce · Těžba · Plnost %"
+            "\n*(připraveno, bude přidáno)*"
+        )
 
 if auto_refresh:
     st.markdown(
@@ -228,386 +245,387 @@ if n_new or len(changes.get("ended", set())) or not changes["changed_mw"].empty:
     st.markdown(f'<div class="alert-box">{"  ·  ".join(parts)}</div>',
                 unsafe_allow_html=True)
 
-# ── ZÁLOŽKY ──────────────────────────────────────────────────────
-tab_dash, tab_ceps, tab_out, tab_dap, tab_rezervy, tab_dg, tab_data = st.tabs([
-    "📊 Odchylka & Generace",
-    "⚡ ČEPS",
-    "🔧 Odstávky",
-    "💶 DAP Ceny",
-    "⚖️ Rezervy",
-    "🌿 Delta Green",
-    "📋 Data",
-])
+if not show_gas:
+    # ── ZÁLOŽKY ──────────────────────────────────────────────────────
+    tab_dash, tab_ceps, tab_out, tab_dap, tab_rezervy, tab_dg, tab_data = st.tabs([
+        "📊 Odchylka & Generace",
+        "⚡ ČEPS",
+        "🔧 Odstávky",
+        "💶 DAP Ceny",
+        "⚖️ Rezervy",
+        "🌿 Delta Green",
+        "📋 Data",
+    ])
 
-# ──────────── TAB 1: ODCHYLKA + GENERACE ─────────────────────────
-with tab_dash:
-    st.markdown('<div class="section-title">Systémová odchylka + zatížení + cena odchylky — ČEPS</div>',
-                unsafe_allow_html=True)
-    df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
-    df_ceps_price = fetch_ceps_imbalance_price()
-    ceps_d = fetch_ceps_all()
-    _load_col = ("Load including pumping [MW]"
-                 if "Load including pumping [MW]" in ceps_d["load"].columns
-                 else "Load [MW]"
-                 if "Load [MW]" in ceps_d["load"].columns
-                 else None)
-    ceps_load_series = (ceps_d["load"][_load_col]
-                        if _load_col else pd.Series(dtype=float))
-    st.plotly_chart(
-        fig_ceps_combined(df_ceps_imbal, df_ceps_price, ceps_load_series, load_fc, now_ceps),
-        use_container_width=True, config={"displayModeBar": False},
-    )
-
-    st.markdown('<div class="section-title">Aktivace SVR v ČR — ČEPS (minutová)</div>',
-                unsafe_allow_html=True)
-    df_svr = fetch_ceps_svr()
-    st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
-                    use_container_width=True, config={"displayModeBar": False})
-
-    st.markdown('<div class="section-title">Balancing strategie</div>', unsafe_allow_html=True)
-    st.info(
-        "ℹ️ Data systémové odchylky mají zpoždění ~15 min. "
-        "EMA (Exponential Moving Average) dává větší váhu posledním intervalům "
-        "a slouží jako proxy pro odhad aktuálního stavu soustavy. "
-        "Zákazníci v balancing segmentu pomáhají síti a jsou za to benefitováni."
-    )
-    st.subheader("⚡ Balancing strategie (EMA predikce)")
-    _bc1, _bc2, _bc3 = st.columns(3)
-    with _bc1:
-        ema_periods = st.slider("EMA okno [ISP]", 1, 8, 4,
-                                help="Počet 5min intervalů pro EMA. 4 = 20 minut.")
-    with _bc2:
-        threshold_mw = st.slider("Práh zásahu [MWh]", 10, 150, 50,
-                                 help="Minimální predikovaná odchylka pro aktivaci signálu. "
-                                      "Vyšší = méně zásahů, nižší = agresivnější balancing.")
-    with _bc3:
-        benefit_eur_mwh = st.number_input("Benefit zákazníka [EUR/MWh]", value=8.0,
-                                          help="Kolik EUR/MWh zákazník vydělá za pomoc síti.")
-
-    if not df_ceps_imbal.empty:
-        imbal_5min = df_ceps_imbal["odchylka_MW"].resample("5min").mean().dropna()
-        _ema, _signal = balancing_strategy_ema(imbal_5min, ema_periods, threshold_mw)
-    elif not df_imbal.empty:
-        imbal_5min = df_imbal["odchylka_MWh"]
-        _ema, _signal = balancing_strategy_ema(imbal_5min, ema_periods, threshold_mw)
-    if not df_ceps_imbal.empty or not df_imbal.empty:
+    # ──────────── TAB 1: ODCHYLKA + GENERACE ─────────────────────────
+    with tab_dash:
+        st.markdown('<div class="section-title">Systémová odchylka + zatížení + cena odchylky — ČEPS</div>',
+                    unsafe_allow_html=True)
+        df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
+        df_ceps_price = fetch_ceps_imbalance_price()
+        ceps_d = fetch_ceps_all()
+        _load_col = ("Load including pumping [MW]"
+                     if "Load including pumping [MW]" in ceps_d["load"].columns
+                     else "Load [MW]"
+                     if "Load [MW]" in ceps_d["load"].columns
+                     else None)
+        ceps_load_series = (ceps_d["load"][_load_col]
+                            if _load_col else pd.Series(dtype=float))
         st.plotly_chart(
-            fig_balancing_strategy(df_imbal, _ema, _signal, threshold_mw, now),
-            use_container_width=True, config={"displayModeBar": False},
-        )
-        _n_int = int((_signal != "STANDBY").sum())
-        _benefit = _n_int * 0.25 * benefit_eur_mwh
-        _bm1, _bm2 = st.columns(2)
-        _bm1.metric("Počet zásahů dnes", _n_int)
-        _bm2.metric("Odhadovaný benefit zákazníka", f"{_benefit:.2f} EUR/den")
-    else:
-        st.info("Data odchylky nejsou dostupná.")
-
-    st.markdown('<div class="section-title">Ceny aktivace záložních rezerv</div>',
-                unsafe_allow_html=True)
-    st.plotly_chart(fig_activation_prices(df_act, now), use_container_width=True,
-                    config={"displayModeBar": False})
-
-    st.markdown('<div class="section-title">Zatížení — skutečnost vs. prognóza D+1</div>',
-                unsafe_allow_html=True)
-    if load_fc.empty:
-        st.info("Data zatížení nejsou dostupná.")
-    else:
-        st.plotly_chart(
-            fig_load(load_fc, ceps_load_series, ceps_d["gen"], now),
+            fig_ceps_combined(df_ceps_imbal, df_ceps_price, ceps_load_series, load_fc, now_ceps),
             use_container_width=True, config={"displayModeBar": False},
         )
 
-    st.markdown('<div class="section-title">Forecast solární výroby [MW] | D0 + D+1</div>',
-                unsafe_allow_html=True)
-    st.plotly_chart(
-        fig_wind_solar_forecast(ws_raw, now, gen_raw=gen_raw),
-        use_container_width=True, config={"displayModeBar": False},
-    )
+        st.markdown('<div class="section-title">Aktivace SVR v ČR — ČEPS (minutová)</div>',
+                    unsafe_allow_html=True)
+        df_svr = fetch_ceps_svr()
+        st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
+                        use_container_width=True, config={"displayModeBar": False})
 
-    st.markdown('<div class="section-title">Generace podle zdroje · Aktuální mix</div>',
-                unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([3, 1.2, 1.2])
-    with c1:
-        if gen_raw.empty:
-            st.info("Data generace nejsou dostupná.")
+        st.markdown('<div class="section-title">Balancing strategie</div>', unsafe_allow_html=True)
+        st.info(
+            "ℹ️ Data systémové odchylky mají zpoždění ~15 min. "
+            "EMA (Exponential Moving Average) dává větší váhu posledním intervalům "
+            "a slouží jako proxy pro odhad aktuálního stavu soustavy. "
+            "Zákazníci v balancing segmentu pomáhají síti a jsou za to benefitováni."
+        )
+        st.subheader("⚡ Balancing strategie (EMA predikce)")
+        _bc1, _bc2, _bc3 = st.columns(3)
+        with _bc1:
+            ema_periods = st.slider("EMA okno [ISP]", 1, 8, 4,
+                                    help="Počet 5min intervalů pro EMA. 4 = 20 minut.")
+        with _bc2:
+            threshold_mw = st.slider("Práh zásahu [MWh]", 10, 150, 50,
+                                     help="Minimální predikovaná odchylka pro aktivaci signálu. "
+                                          "Vyšší = méně zásahů, nižší = agresivnější balancing.")
+        with _bc3:
+            benefit_eur_mwh = st.number_input("Benefit zákazníka [EUR/MWh]", value=8.0,
+                                              help="Kolik EUR/MWh zákazník vydělá za pomoc síti.")
+
+        if not df_ceps_imbal.empty:
+            imbal_5min = df_ceps_imbal["odchylka_MW"].resample("5min").mean().dropna()
+            _ema, _signal = balancing_strategy_ema(imbal_5min, ema_periods, threshold_mw)
+        elif not df_imbal.empty:
+            imbal_5min = df_imbal["odchylka_MWh"]
+            _ema, _signal = balancing_strategy_ema(imbal_5min, ema_periods, threshold_mw)
+        if not df_ceps_imbal.empty or not df_imbal.empty:
+            st.plotly_chart(
+                fig_balancing_strategy(df_imbal, _ema, _signal, threshold_mw, now),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+            _n_int = int((_signal != "STANDBY").sum())
+            _benefit = _n_int * 0.25 * benefit_eur_mwh
+            _bm1, _bm2 = st.columns(2)
+            _bm1.metric("Počet zásahů dnes", _n_int)
+            _bm2.metric("Odhadovaný benefit zákazníka", f"{_benefit:.2f} EUR/den")
         else:
-            st.plotly_chart(fig_generation_area(gen_raw, now), use_container_width=True,
-                            config={"displayModeBar": False})
-    with c2:
-        st.plotly_chart(fig_generation_donut(gen_raw), use_container_width=True,
-                        config={"displayModeBar": False})
-    with c3:
-        st.markdown('<div class="section-title">Mix</div>', unsafe_allow_html=True)
-        st.markdown(render_mix_legend(gen_raw), unsafe_allow_html=True)
+            st.info("Data odchylky nejsou dostupná.")
 
-    st.markdown('<div class="section-title">aFRR + mFRR — D0 (objemy a ceny)</div>',
-                unsafe_allow_html=True)
-    _d0_start = now.normalize()
-    _d0_end   = now.normalize() + pd.Timedelta(days=1)
-    rd1, rd2  = st.columns(2)
-    with rd1:
-        st.plotly_chart(
-            fig_reserve_volumes(reserves, now, _d0_start, _d0_end, height=300),
-            use_container_width=True, config={"displayModeBar": False},
-        )
-    with rd2:
-        st.plotly_chart(
-            fig_reserve_prices(reserves, now, _d0_start, _d0_end, height=300),
-            use_container_width=True, config={"displayModeBar": False},
-        )
-
-
-# ──────────── TAB ČEPS: REAL-TIME DASHBOARD ──────────────────────
-with tab_ceps:
-    st.markdown(
-        "Zdroj: **ČEPS a.s.** — data jsou anonymní, bez autentizace. "
-        "Zpoždění ~1–5 minut. Výroba podle zdroje má granularitu 15 min, "
-        "ostatní data jsou minutová."
-    )
-    with st.spinner("Načítám ČEPS real-time data..."):
-        ceps_data = fetch_ceps_all()
-
-    st.plotly_chart(
-        fig_ceps_dashboard(ceps_data),
-        use_container_width=True,
-        config={"displayModeBar": False},
-    )
-
-    df_i = ceps_data["imbal"]
-    df_f = ceps_data["freq"]
-    df_l = ceps_data["load"]
-    c1, c2, c3, c4 = st.columns(4)
-    if not df_i.empty:
-        last_imb = float(df_i.iloc[-1, 0])
-        c1.metric("Odchylka", f"{last_imb:+.1f} MW",
-                  delta="Surplus" if last_imb >= 0 else "Deficit")
-    if not df_f.empty:
-        last_hz = float(df_f.iloc[-1, 0])
-        c2.metric("Frekvence", f"{last_hz:.3f} Hz",
-                  delta=f"{last_hz-50:.3f} Hz")
-    if not df_l.empty and "Load [MW]" in df_l.columns:
-        last_load = float(df_l["Load [MW]"].iloc[-1])
-        c3.metric("Zatížení", f"{last_load:,.0f} MW")
-    if not ceps_data["cb"].empty and "Net Export (MW)" in ceps_data["cb"].columns:
-        net = float(ceps_data["cb"]["Net Export (MW)"].iloc[-1])
-        c4.metric("Net Export", f"{net:+.0f} MW",
-                  delta="export" if net >= 0 else "import")
-
-
-# ──────────── TAB 2: ODSTÁVKY ─────────────────────────────────────
-with tab_out:
-    st.markdown('<div class="section-title">Instalovaná kapacita podle zdroje (14.1.A)</div>',
-                unsafe_allow_html=True)
-    cap = fetch_installed_capacity()
-    if not cap.empty:
-        st.plotly_chart(fig_installed_capacity(cap), use_container_width=True,
+        st.markdown('<div class="section-title">Ceny aktivace záložních rezerv</div>',
+                    unsafe_allow_html=True)
+        st.plotly_chart(fig_activation_prices(df_act, now), use_container_width=True,
                         config={"displayModeBar": False})
 
-    st.markdown(f'<div class="section-title">Výrobní jednotky (PU) — {n_pu} aktivních</div>',
-                unsafe_allow_html=True)
-    st.plotly_chart(fig_outages_gantt(df_out, "PU", now, changes),
-                    use_container_width=True, config={"displayModeBar": False})
-
-    st.markdown(f'<div class="section-title">Generační jednotky (GU) — {n_gu} aktivních</div>',
-                unsafe_allow_html=True)
-    st.plotly_chart(fig_outages_gantt(df_out, "GU", now, changes),
-                    use_container_width=True, config={"displayModeBar": False})
-
-    n_ended_tab = len(changes.get("ended", set()))
-    n_chmw_tab  = len(changes["changed_mw"])
-    with st.expander(f"📋 Detail změn  ·  {n_new} nových · {n_ended_tab} ukončených · {n_chmw_tab} změn MW",
-                     expanded=bool(n_new or n_ended_tab or n_chmw_tab)):
-        if not (n_new or n_ended_tab or n_chmw_tab):
-            st.markdown("<em style='color:#888'>Žádné změny od posledního obnovení.</em>",
-                        unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Zatížení — skutečnost vs. prognóza D+1</div>',
+                    unsafe_allow_html=True)
+        if load_fc.empty:
+            st.info("Data zatížení nejsou dostupná.")
         else:
-            if n_new and not df_out.empty:
-                new_df = (df_out[df_out[["unit_raw","outage_start","outage_end"]]
-                                 .apply(tuple, axis=1).isin(changes["new"])]
-                          .sort_values("unavailable_MW", ascending=False))
-                st.markdown("**🆕 Nové odstávky**")
-                st.dataframe(
-                    new_df[["unit_name","unit_level","outage_start","outage_end",
-                             "installed_MW","unavailable_MW","outage_type"]],
-                    use_container_width=True, hide_index=True,
-                )
-            if not changes["changed_mw"].empty:
-                st.markdown("**⚡ Změny výkonu**")
-                st.dataframe(changes["changed_mw"], use_container_width=True, hide_index=True)
+            st.plotly_chart(
+                fig_load(load_fc, ceps_load_series, ceps_d["gen"], now),
+                use_container_width=True, config={"displayModeBar": False},
+            )
 
-
-# ──────────── TAB 3: DAP CENY ────────────────────────────────────
-with tab_dap:
-    s_d0 = fetch_dap(0)
-    s_d1 = fetch_dap(1)
-    st.plotly_chart(fig_dap(s_d0, s_d1, now), use_container_width=True,
-                    config={"displayModeBar": False})
-    c_l, c_r = st.columns(2)
-
-    def _stat_table(stats, label):
-        rows = [("Base",     stats["base"]),
-                ("Peak 8-20", stats["peak"]),
-                ("Off-peak",  stats["offpeak"]),
-                ("Min",       stats["min"]),
-                ("Max",       stats["max"])]
-        st.markdown(f"**{label}**")
-        for lbl, val in rows:
-            v = f"{val:.2f} EUR" if val is not None else "—"
-            st.markdown(f"- {lbl}: **{v}**")
-
-    with c_l:
-        _stat_table(calc_dap_stats(s_d0), f"D0 — {now.strftime('%d.%m.%Y')}")
-    with c_r:
-        _stat_table(calc_dap_stats(s_d1), f"D+1 — {(now+pd.Timedelta(days=1)).strftime('%d.%m.%Y')}")
-
-    st.markdown('<div class="section-title">aFRR + mFRR — D0 + D+1 (objemy a ceny)</div>',
-                unsafe_allow_html=True)
-    dap_start = now.normalize()
-    dap_end   = now.normalize() + pd.Timedelta(days=2)
-    rc1, rc2  = st.columns(2)
-    with rc1:
+        st.markdown('<div class="section-title">Forecast solární výroby [MW] | D0 + D+1</div>',
+                    unsafe_allow_html=True)
         st.plotly_chart(
-            fig_reserve_volumes(reserves, now, dap_start, dap_end, height=320),
-            use_container_width=True, config={"displayModeBar": False},
-        )
-    with rc2:
-        st.plotly_chart(
-            fig_reserve_prices(reserves, now, dap_start, dap_end, height=320),
+            fig_wind_solar_forecast(ws_raw, now, gen_raw=gen_raw),
             use_container_width=True, config={"displayModeBar": False},
         )
 
-    st.markdown('<div class="section-title">Strategie baterie</div>', unsafe_allow_html=True)
-    st.info(
-        "ℹ️ Strategie nabíjí baterii při nízkých cenách a vybíjí při vysokých. "
-        "Cena cyklování zahrnuje degradaci baterie a kompenzaci zákazníkovi. "
-        "Strategie cykluje maximálně N×/den aby chránila životnost baterie."
-    )
-    _prices_combined = pd.concat([s_d0, s_d1]).sort_index().dropna()
-    if not _prices_combined.empty:
-        _avg = float(_prices_combined.mean())
-        _low = _avg - cycle_cost / 2
-        _hig = _avg + cycle_cost / 2
-        _df_sim, _cycles_done = simulate_battery_dap(
-            _prices_combined, bat_capacity_kwh, bat_power_kw,
-            max_cycles, cycle_cost, hold_enabled,
-        )
-        st.plotly_chart(
-            fig_battery_strategy(_df_sim, _low, _hig, _avg, now),
-            use_container_width=True, config={"displayModeBar": False},
-        )
-        _total_rev = float(_df_sim["revenue_eur"].sum())
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Celkový výnos D0+D+1", f"{_total_rev:.2f} EUR")
-        m2.metric("Počet cyklů", f"{_cycles_done:.1f} / {max_cycles}")
-        m3.metric("Výnos vs. bez strategie", f"{_total_rev:+.2f} EUR",
-                  help="Porovnání s pasivní strategií (baterie nečinná)")
-    else:
-        st.info("DAP data nejsou dostupná pro simulaci.")
-
-
-# ──────────── TAB 4: REZERVY ─────────────────────────────────────
-with tab_rezervy:
-    res_start = now.normalize()
-    res_end   = now.normalize() + pd.Timedelta(days=7)
-    if now.month < 7:
-        _a04_label = f"{now.year}-01-01 – {now.year}-07-01"
-    else:
-        _a04_label = f"{now.year}-07-01 – {now.year + 1}-01-01"
-
-    st.markdown(
-        '<div class="section-title">'
-        f'aFRR + mFRR — D0 až D+7 &nbsp;·&nbsp; '
-        f'Solid = A01 denní &nbsp;·&nbsp; Dash = A04 roční ({_a04_label})'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-    st.plotly_chart(
-        fig_reserve_volumes(reserves, now, res_start, res_end, height=420),
-        use_container_width=True, config={"displayModeBar": False},
-    )
-    st.plotly_chart(
-        fig_reserve_prices(reserves, now, res_start, res_end, height=420),
-        use_container_width=True, config={"displayModeBar": False},
-    )
-
-    with st.expander("📥 Stáhnout surová data rezerv"):
-        ec1, ec2, ec3, ec4, ec5, ec6 = st.columns(6)
-        for col_obj, df_r, label, fname in [
-            (ec1, reserves["afrr_d_amt"], "aFRR denní obj.", "afrr_d_amount.csv"),
-            (ec2, reserves["afrr_d_pri"], "aFRR denní ceny", "afrr_d_price.csv"),
-            (ec3, reserves["afrr_y_amt"], "aFRR roční obj.", "afrr_y_amount.csv"),
-            (ec4, reserves["afrr_y_pri"], "aFRR roční ceny", "afrr_y_price.csv"),
-            (ec5, reserves["mfrr_d_amt"], "mFRR denní obj.", "mfrr_d_amount.csv"),
-            (ec6, reserves["mfrr_d_pri"], "mFRR denní ceny", "mfrr_d_price.csv"),
-        ]:
-            with col_obj:
-                if not df_r.empty:
-                    st.download_button(f"⬇ {label}", df_r.to_csv().encode(), fname, "text/csv")
-                else:
-                    st.caption(f"{label}: —")
-
-
-# ──────────── TAB 5: DELTA GREEN ─────────────────────────────────
-with tab_dg:
-    dg_key = st.session_state.dg_api_key.strip()
-    if not dg_key:
-        st.info("Zadejte Delta Green API klíč v levém panelu (⚙️ Nastavení).")
-    else:
-        with st.spinner("Načítám Delta Green…"):
-            try:
-                df1_dg, df2_dg = fetch_deltagreen(dg_key)
-                st.plotly_chart(fig_deltagreen(df1_dg, df2_dg), use_container_width=True,
+        st.markdown('<div class="section-title">Generace podle zdroje · Aktuální mix</div>',
+                    unsafe_allow_html=True)
+        c1, c2, c3 = st.columns([3, 1.2, 1.2])
+        with c1:
+            if gen_raw.empty:
+                st.info("Data generace nejsou dostupná.")
+            else:
+                st.plotly_chart(fig_generation_area(gen_raw, now), use_container_width=True,
                                 config={"displayModeBar": False})
-                last2 = df2_dg.dropna(subset=["upPowerKW","downBatteryPowerKW",
-                                               "downSolarCurtailmentPowerKW"]).iloc[-1]
-                last1 = df1_dg.dropna(subset=["batteryPowerKW","consumptionPowerKW",
-                                               "photovoltaicPowerKW","gridPowerKW"]).iloc[-1]
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Baterie",      f"{float(last1['batteryPowerKW']):+.0f} kW")
-                k2.metric("Fotovoltaika", f"{float(last1['photovoltaicPowerKW']):.0f} kW")
-                k3.metric("Max UP",       f"{float(last2['upPowerKW']):.0f} kW")
-                total_down = float(last2["downBatteryPowerKW"]) + float(last2["downSolarCurtailmentPowerKW"])
-                k4.metric("Max DOWN",     f"{total_down:.0f} kW")
-            except Exception as e:
-                st.error(f"Delta Green nedostupný: {e}")
+        with c2:
+            st.plotly_chart(fig_generation_donut(gen_raw), use_container_width=True,
+                            config={"displayModeBar": False})
+        with c3:
+            st.markdown('<div class="section-title">Mix</div>', unsafe_allow_html=True)
+            st.markdown(render_mix_legend(gen_raw), unsafe_allow_html=True)
+
+        st.markdown('<div class="section-title">aFRR + mFRR — D0 (objemy a ceny)</div>',
+                    unsafe_allow_html=True)
+        _d0_start = now.normalize()
+        _d0_end   = now.normalize() + pd.Timedelta(days=1)
+        rd1, rd2  = st.columns(2)
+        with rd1:
+            st.plotly_chart(
+                fig_reserve_volumes(reserves, now, _d0_start, _d0_end, height=300),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+        with rd2:
+            st.plotly_chart(
+                fig_reserve_prices(reserves, now, _d0_start, _d0_end, height=300),
+                use_container_width=True, config={"displayModeBar": False},
+            )
 
 
-# ──────────── TAB 6: SUROVÁ DATA ─────────────────────────────────
-with tab_data:
-    t1, t2, t3, t4 = st.tabs(["Odchylka", "Odstávky PU", "Odstávky GU", "Generace"])
+    # ──────────── TAB ČEPS: REAL-TIME DASHBOARD ──────────────────────
+    with tab_ceps:
+        st.markdown(
+            "Zdroj: **ČEPS a.s.** — data jsou anonymní, bez autentizace. "
+            "Zpoždění ~1–5 minut. Výroba podle zdroje má granularitu 15 min, "
+            "ostatní data jsou minutová."
+        )
+        with st.spinner("Načítám ČEPS real-time data..."):
+            ceps_data = fetch_ceps_all()
 
-    with t1:
-        if not df_imbal.empty:
-            st.dataframe(df_imbal.iloc[::-1], use_container_width=True)
-            st.download_button("⬇ CSV odchylka", df_imbal.to_csv().encode(),
-                               "odchylka.csv", "text/csv")
+        st.plotly_chart(
+            fig_ceps_dashboard(ceps_data),
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
 
-    def _out_tab(lvl):
-        sub = df_out[df_out["unit_level"] == lvl] if not df_out.empty else pd.DataFrame()
-        if sub.empty:
-            st.info(f"Žádné odstávky {lvl}.")
-            return
-        cols = ["unit_name","outage_start","outage_end","installed_MW",
-                "available_MW","unavailable_MW","available_pct","outage_type"]
-        st.dataframe(sub[[c for c in cols if c in sub.columns]],
-                     use_container_width=True, hide_index=True)
-        st.download_button(f"⬇ CSV {lvl}", sub.to_csv(index=False).encode(),
-                           f"outages_{lvl}.csv", "text/csv")
+        df_i = ceps_data["imbal"]
+        df_f = ceps_data["freq"]
+        df_l = ceps_data["load"]
+        c1, c2, c3, c4 = st.columns(4)
+        if not df_i.empty:
+            last_imb = float(df_i.iloc[-1, 0])
+            c1.metric("Odchylka", f"{last_imb:+.1f} MW",
+                      delta="Surplus" if last_imb >= 0 else "Deficit")
+        if not df_f.empty:
+            last_hz = float(df_f.iloc[-1, 0])
+            c2.metric("Frekvence", f"{last_hz:.3f} Hz",
+                      delta=f"{last_hz-50:.3f} Hz")
+        if not df_l.empty and "Load [MW]" in df_l.columns:
+            last_load = float(df_l["Load [MW]"].iloc[-1])
+            c3.metric("Zatížení", f"{last_load:,.0f} MW")
+        if not ceps_data["cb"].empty and "Net Export (MW)" in ceps_data["cb"].columns:
+            net = float(ceps_data["cb"]["Net Export (MW)"].iloc[-1])
+            c4.metric("Net Export", f"{net:+.0f} MW",
+                      delta="export" if net >= 0 else "import")
 
-    with t2: _out_tab("PU")
-    with t3: _out_tab("GU")
 
-    with t4:
-        if not gen_raw.empty:
-            from config import psr_lookup as _psr_lookup
-            display_gen = gen_raw.copy()
-            display_gen.columns = [_psr_lookup(c)[0] for c in display_gen.columns]
-            st.dataframe(display_gen.iloc[::-1], use_container_width=True)
-            st.download_button("⬇ CSV generace", display_gen.to_csv().encode(),
-                               "generace.csv", "text/csv")
+    # ──────────── TAB 2: ODSTÁVKY ─────────────────────────────────────
+    with tab_out:
+        st.markdown('<div class="section-title">Instalovaná kapacita podle zdroje (14.1.A)</div>',
+                    unsafe_allow_html=True)
+        cap = fetch_installed_capacity()
+        if not cap.empty:
+            st.plotly_chart(fig_installed_capacity(cap), use_container_width=True,
+                            config={"displayModeBar": False})
+
+        st.markdown(f'<div class="section-title">Výrobní jednotky (PU) — {n_pu} aktivních</div>',
+                    unsafe_allow_html=True)
+        st.plotly_chart(fig_outages_gantt(df_out, "PU", now, changes),
+                        use_container_width=True, config={"displayModeBar": False})
+
+        st.markdown(f'<div class="section-title">Generační jednotky (GU) — {n_gu} aktivních</div>',
+                    unsafe_allow_html=True)
+        st.plotly_chart(fig_outages_gantt(df_out, "GU", now, changes),
+                        use_container_width=True, config={"displayModeBar": False})
+
+        n_ended_tab = len(changes.get("ended", set()))
+        n_chmw_tab  = len(changes["changed_mw"])
+        with st.expander(f"📋 Detail změn  ·  {n_new} nových · {n_ended_tab} ukončených · {n_chmw_tab} změn MW",
+                         expanded=bool(n_new or n_ended_tab or n_chmw_tab)):
+            if not (n_new or n_ended_tab or n_chmw_tab):
+                st.markdown("<em style='color:#888'>Žádné změny od posledního obnovení.</em>",
+                            unsafe_allow_html=True)
+            else:
+                if n_new and not df_out.empty:
+                    new_df = (df_out[df_out[["unit_raw","outage_start","outage_end"]]
+                                     .apply(tuple, axis=1).isin(changes["new"])]
+                              .sort_values("unavailable_MW", ascending=False))
+                    st.markdown("**🆕 Nové odstávky**")
+                    st.dataframe(
+                        new_df[["unit_name","unit_level","outage_start","outage_end",
+                                 "installed_MW","unavailable_MW","outage_type"]],
+                        use_container_width=True, hide_index=True,
+                    )
+                if not changes["changed_mw"].empty:
+                    st.markdown("**⚡ Změny výkonu**")
+                    st.dataframe(changes["changed_mw"], use_container_width=True, hide_index=True)
+
+
+    # ──────────── TAB 3: DAP CENY ────────────────────────────────────
+    with tab_dap:
+        s_d0 = fetch_dap(0)
+        s_d1 = fetch_dap(1)
+        st.plotly_chart(fig_dap(s_d0, s_d1, now), use_container_width=True,
+                        config={"displayModeBar": False})
+        c_l, c_r = st.columns(2)
+
+        def _stat_table(stats, label):
+            rows = [("Base",     stats["base"]),
+                    ("Peak 8-20", stats["peak"]),
+                    ("Off-peak",  stats["offpeak"]),
+                    ("Min",       stats["min"]),
+                    ("Max",       stats["max"])]
+            st.markdown(f"**{label}**")
+            for lbl, val in rows:
+                v = f"{val:.2f} EUR" if val is not None else "—"
+                st.markdown(f"- {lbl}: **{v}**")
+
+        with c_l:
+            _stat_table(calc_dap_stats(s_d0), f"D0 — {now.strftime('%d.%m.%Y')}")
+        with c_r:
+            _stat_table(calc_dap_stats(s_d1), f"D+1 — {(now+pd.Timedelta(days=1)).strftime('%d.%m.%Y')}")
+
+        st.markdown('<div class="section-title">aFRR + mFRR — D0 + D+1 (objemy a ceny)</div>',
+                    unsafe_allow_html=True)
+        dap_start = now.normalize()
+        dap_end   = now.normalize() + pd.Timedelta(days=2)
+        rc1, rc2  = st.columns(2)
+        with rc1:
+            st.plotly_chart(
+                fig_reserve_volumes(reserves, now, dap_start, dap_end, height=320),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+        with rc2:
+            st.plotly_chart(
+                fig_reserve_prices(reserves, now, dap_start, dap_end, height=320),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+
+        st.markdown('<div class="section-title">Strategie baterie</div>', unsafe_allow_html=True)
+        st.info(
+            "ℹ️ Strategie nabíjí baterii při nízkých cenách a vybíjí při vysokých. "
+            "Cena cyklování zahrnuje degradaci baterie a kompenzaci zákazníkovi. "
+            "Strategie cykluje maximálně N×/den aby chránila životnost baterie."
+        )
+        _prices_combined = pd.concat([s_d0, s_d1]).sort_index().dropna()
+        if not _prices_combined.empty:
+            _avg = float(_prices_combined.mean())
+            _low = _avg - cycle_cost / 2
+            _hig = _avg + cycle_cost / 2
+            _df_sim, _cycles_done = simulate_battery_dap(
+                _prices_combined, bat_capacity_kwh, bat_power_kw,
+                max_cycles, cycle_cost, hold_enabled,
+            )
+            st.plotly_chart(
+                fig_battery_strategy(_df_sim, _low, _hig, _avg, now),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+            _total_rev = float(_df_sim["revenue_eur"].sum())
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Celkový výnos D0+D+1", f"{_total_rev:.2f} EUR")
+            m2.metric("Počet cyklů", f"{_cycles_done:.1f} / {max_cycles}")
+            m3.metric("Výnos vs. bez strategie", f"{_total_rev:+.2f} EUR",
+                      help="Porovnání s pasivní strategií (baterie nečinná)")
         else:
-            st.info("Data generace nejsou dostupná.")
+            st.info("DAP data nejsou dostupná pro simulaci.")
+
+
+    # ──────────── TAB 4: REZERVY ─────────────────────────────────────
+    with tab_rezervy:
+        res_start = now.normalize()
+        res_end   = now.normalize() + pd.Timedelta(days=7)
+        if now.month < 7:
+            _a04_label = f"{now.year}-01-01 – {now.year}-07-01"
+        else:
+            _a04_label = f"{now.year}-07-01 – {now.year + 1}-01-01"
+
+        st.markdown(
+            '<div class="section-title">'
+            f'aFRR + mFRR — D0 až D+7 &nbsp;·&nbsp; '
+            f'Solid = A01 denní &nbsp;·&nbsp; Dash = A04 roční ({_a04_label})'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            fig_reserve_volumes(reserves, now, res_start, res_end, height=420),
+            use_container_width=True, config={"displayModeBar": False},
+        )
+        st.plotly_chart(
+            fig_reserve_prices(reserves, now, res_start, res_end, height=420),
+            use_container_width=True, config={"displayModeBar": False},
+        )
+
+        with st.expander("📥 Stáhnout surová data rezerv"):
+            ec1, ec2, ec3, ec4, ec5, ec6 = st.columns(6)
+            for col_obj, df_r, label, fname in [
+                (ec1, reserves["afrr_d_amt"], "aFRR denní obj.", "afrr_d_amount.csv"),
+                (ec2, reserves["afrr_d_pri"], "aFRR denní ceny", "afrr_d_price.csv"),
+                (ec3, reserves["afrr_y_amt"], "aFRR roční obj.", "afrr_y_amount.csv"),
+                (ec4, reserves["afrr_y_pri"], "aFRR roční ceny", "afrr_y_price.csv"),
+                (ec5, reserves["mfrr_d_amt"], "mFRR denní obj.", "mfrr_d_amount.csv"),
+                (ec6, reserves["mfrr_d_pri"], "mFRR denní ceny", "mfrr_d_price.csv"),
+            ]:
+                with col_obj:
+                    if not df_r.empty:
+                        st.download_button(f"⬇ {label}", df_r.to_csv().encode(), fname, "text/csv")
+                    else:
+                        st.caption(f"{label}: —")
+
+
+    # ──────────── TAB 5: DELTA GREEN ─────────────────────────────────
+    with tab_dg:
+        dg_key = st.session_state.dg_api_key.strip()
+        if not dg_key:
+            st.info("Zadejte Delta Green API klíč v levém panelu (⚙️ Nastavení).")
+        else:
+            with st.spinner("Načítám Delta Green…"):
+                try:
+                    df1_dg, df2_dg = fetch_deltagreen(dg_key)
+                    st.plotly_chart(fig_deltagreen(df1_dg, df2_dg), use_container_width=True,
+                                    config={"displayModeBar": False})
+                    last2 = df2_dg.dropna(subset=["upPowerKW","downBatteryPowerKW",
+                                                   "downSolarCurtailmentPowerKW"]).iloc[-1]
+                    last1 = df1_dg.dropna(subset=["batteryPowerKW","consumptionPowerKW",
+                                                   "photovoltaicPowerKW","gridPowerKW"]).iloc[-1]
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("Baterie",      f"{float(last1['batteryPowerKW']):+.0f} kW")
+                    k2.metric("Fotovoltaika", f"{float(last1['photovoltaicPowerKW']):.0f} kW")
+                    k3.metric("Max UP",       f"{float(last2['upPowerKW']):.0f} kW")
+                    total_down = float(last2["downBatteryPowerKW"]) + float(last2["downSolarCurtailmentPowerKW"])
+                    k4.metric("Max DOWN",     f"{total_down:.0f} kW")
+                except Exception as e:
+                    st.error(f"Delta Green nedostupný: {e}")
+
+
+    # ──────────── TAB 6: SUROVÁ DATA ─────────────────────────────────
+    with tab_data:
+        t1, t2, t3, t4 = st.tabs(["Odchylka", "Odstávky PU", "Odstávky GU", "Generace"])
+
+        with t1:
+            if not df_imbal.empty:
+                st.dataframe(df_imbal.iloc[::-1], use_container_width=True)
+                st.download_button("⬇ CSV odchylka", df_imbal.to_csv().encode(),
+                                   "odchylka.csv", "text/csv")
+
+        def _out_tab(lvl):
+            sub = df_out[df_out["unit_level"] == lvl] if not df_out.empty else pd.DataFrame()
+            if sub.empty:
+                st.info(f"Žádné odstávky {lvl}.")
+                return
+            cols = ["unit_name","outage_start","outage_end","installed_MW",
+                    "available_MW","unavailable_MW","available_pct","outage_type"]
+            st.dataframe(sub[[c for c in cols if c in sub.columns]],
+                         use_container_width=True, hide_index=True)
+            st.download_button(f"⬇ CSV {lvl}", sub.to_csv(index=False).encode(),
+                               f"outages_{lvl}.csv", "text/csv")
+
+        with t2: _out_tab("PU")
+        with t3: _out_tab("GU")
+
+        with t4:
+            if not gen_raw.empty:
+                from config import psr_lookup as _psr_lookup
+                display_gen = gen_raw.copy()
+                display_gen.columns = [_psr_lookup(c)[0] for c in display_gen.columns]
+                st.dataframe(display_gen.iloc[::-1], use_container_width=True)
+                st.download_button("⬇ CSV generace", display_gen.to_csv().encode(),
+                                   "generace.csv", "text/csv")
+            else:
+                st.info("Data generace nejsou dostupná.")
 
 st.session_state.iteration += 1
 
@@ -624,9 +642,8 @@ if show_gas:
         tab_map, tab_bar, tab_hist = st.tabs(["🗺️ Mapa", "📊 Toky", "📈 Historie"])
 
         with tab_map:
-            gas_map = build_gas_map(pivot_gas)
-            from streamlit_folium import st_folium
-            st_folium(gas_map, width=900, height=500)
+            gas_map_html = build_gas_map(pivot_gas)
+            st.components.v1.html(gas_map_html, height=520, scrolling=False)
 
         with tab_bar:
             days_sel = st.slider("Počet dní", 7, 90, 30, key="gas_days")

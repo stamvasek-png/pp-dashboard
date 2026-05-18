@@ -61,10 +61,10 @@ def fig_gas_point_history(pivot: pd.DataFrame, point: str, height: int = 260) ->
     return fig
 
 
-def build_gas_map(pivot: pd.DataFrame) -> folium.Map:
+def build_gas_map(pivot: pd.DataFrame) -> str:
     """Interaktivní mapa fyzických toků CZ."""
     if pivot.empty or len(pivot) < 2:
-        return folium.Map(location=[49.8, 15.5], zoom_start=7, tiles="CartoDB positron")
+        return folium.Map(location=[49.8, 15.5], zoom_start=7, tiles="CartoDB positron")._repr_html_()
 
     last      = pivot.iloc[-2]
     prev      = pivot.iloc[-3]
@@ -153,4 +153,4 @@ def build_gas_map(pivot: pd.DataFrame) -> folium.Map:
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))
-    return m
+    return m._repr_html_()
