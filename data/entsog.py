@@ -1,3 +1,4 @@
+import os
 import requests
 import pandas as pd
 import streamlit as st
@@ -47,3 +48,28 @@ def fetch_entsog_flows(days: int = 90) -> pd.DataFrame:
         return pivot
     except Exception:
         return pd.DataFrame()
+
+
+def load_entsog_history() -> pd.DataFrame:
+    """
+    Načte historická data z CSV (generovaného GitHub Actions).
+    Fallback na live API (posledních 90 dní) pokud CSV neexistuje.
+    """
+    csv_path = "data/history/entsog_cz_flows.csv"
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert("Europe/Prague")
+        return df
+    return fetch_entsog_flows(days=90)
+
+
+def load_gie_history() -> pd.DataFrame:
+    """
+    Načte historická data zásobníků z CSV.
+    """
+    csv_path = "data/history/gie_cz_storage.csv"
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert("Europe/Prague")
+        return df
+    return pd.DataFrame()
