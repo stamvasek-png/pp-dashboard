@@ -660,8 +660,32 @@ if show_gas:
         )
 
         with tab_map:
-            gas_map_html = build_gas_map(pivot_gas)
-            st.components.v1.html(gas_map_html, height=520, scrolling=False)
+            df_map = load_entsog_history()
+            if df_map.empty:
+                st.warning("Data nejsou dostupná.")
+            else:
+                df_map["date"] = pd.to_datetime(df_map["date"], utc=True)
+                df_map["value_GWh"] = pd.to_numeric(
+                    df_map.get("value_GWh", 0), errors="coerce"
+                ).fillna(0)
+
+                df_cz = df_map[df_map["countryLabel"] == "Czechia"].copy()
+
+                entry = df_cz[df_cz["directionKey"] == "entry"].groupby(
+                    ["date", "pointsNames"])["value_GWh"].sum()
+                exit_ = df_cz[df_cz["directionKey"] == "exit"].groupby(
+                    ["date", "pointsNames"])["value_GWh"].sum()
+
+                pivot_map = (
+                    entry.unstack(fill_value=0) - exit_.unstack(fill_value=0)
+                ).fillna(0)
+                pivot_map.index = pd.to_datetime(pivot_map.index, utc=True)
+
+                from data.entsog import _short_name
+                pivot_map.columns = [_short_name(c) for c in pivot_map.columns]
+
+                gas_map_html = build_gas_map(pivot_map)
+                st.components.v1.html(gas_map_html, height=520, scrolling=False)
 
         with tab_bar:
             df_hist = load_entsog_history()
