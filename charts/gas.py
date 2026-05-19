@@ -9,38 +9,36 @@ FLOW_COLORS = [
 ]
 
 GAS_NODES = {
-    # Hraniční přechody CZ
     "Brandov/Waidhaus (DE)": (50.61, 13.39),
     "Lanžhot (SK)":          (48.72, 17.04),
     "Český Těšín (PL)":      (49.75, 18.62),
     "Zásobníky":             (49.75, 15.80),
     "Distribuce":            (49.40, 16.20),
     "Koneční spotřebitelé":  (49.10, 15.50),
-    # Sousední centroidy
-    "DE":  (51.20, 10.50),
-    "SK":  (48.50, 19.50),
-    "PL":  (52.00, 20.00),
-    "AT":  (47.80, 13.00),
-    "HU":  (47.20, 19.00),
-    # Vzdálené země
-    "NL":  (52.30,  5.30),
-    "FR":  (46.50,  2.50),
-    # CZ centroid
     "CZ":  (49.80, 15.50),
+    "DE":  (51.50, 10.00),
+    "SK":  (48.70, 19.50),
+    "PL":  (52.20, 20.00),
+    "AT":  (47.80, 13.50),
+    "HU":  (47.20, 19.00),
+    "NL":  (52.20,  5.30),
+    "FR":  (46.50,  2.50),
 }
 
 # Koridory: (uzel_od, uzel_do, label, datový_klíč_v_pivot)
+# Každý segment = jedna čára; data_key=None → šedá bez šipky
 GAS_CORRIDORS = [
-    ("DE",  "Brandov/Waidhaus (DE)", "DE→CZ Brandov",    "Brandov/Waidhaus (DE)"),
-    ("Brandov/Waidhaus (DE)", "CZ",  "Import Brandov→CZ", "Brandov/Waidhaus (DE)"),
-    ("CZ",  "Lanžhot (SK)",          "CZ→SK Lanžhot",    "Lanžhot (SK)"),
-    ("CZ",  "Český Těšín (PL)",      "CZ→PL Těšín",      "Český Těšín (PL)"),
-    ("CZ",  "Zásobníky",             "Zásobníky CZ",     "Zásobníky"),
-    ("NL",  "DE",                    "NL→DE",             None),
-    ("FR",  "DE",                    "FR→DE",             None),
-    ("DE",  "AT",                    "DE→AT",             None),
-    ("AT",  "SK",                    "AT→SK",             None),
-    ("SK",  "HU",                    "SK→HU",             None),
+    ("DE",  "Brandov/Waidhaus (DE)", "DE→Brandov",        "Brandov/Waidhaus (DE)"),
+    ("Brandov/Waidhaus (DE)", "CZ",  "Brandov→CZ",        "Brandov/Waidhaus (DE)"),
+    ("CZ",  "Lanžhot (SK)",          "CZ→Lanžhot",        "Lanžhot (SK)"),
+    ("CZ",  "Český Těšín (PL)",      "CZ→Těšín",          "Český Těšín (PL)"),
+    ("CZ",  "Zásobníky",             "CZ→Zásobníky",      "Zásobníky"),
+    ("NL",  "DE",   "NL→DE Transit",  None),
+    ("FR",  "DE",   "FR→DE",          None),
+    ("DE",  "AT",   "DE→AT",          None),
+    ("AT",  "SK",   "AT→SK Transit",  None),
+    ("SK",  "HU",   "SK→HU",          None),
+    ("PL",  "Český Těšín (PL)", "PL→Těšín", None),
 ]
 
 
@@ -292,7 +290,7 @@ def build_gas_map(pivot: pd.DataFrame) -> str:
     import numpy as np
 
     m = folium.Map(
-        location=[49.5, 13.0],
+        location=[49.5, 11.0],
         zoom_start=5,
         tiles="CartoDB positron",
     )
@@ -336,31 +334,46 @@ def build_gas_map(pivot: pd.DataFrame) -> str:
         if not p1 or not p2:
             continue
 
-        val      = get_val(data_key)
-        has_data = data_key is not None
+        if data_key is None:
+            # Koridor bez dat — šedá tenká čára, bez šipky
+            folium.PolyLine(
+                locations=[p1, p2],
+                color="#BDBDBD", weight=1.5, opacity=0.3,
+                tooltip=label,
+            ).add_to(m)
+            continue
 
-        if has_data and val < 0:
+        val = get_val(data_key)
+
+        if val < 0:
             draw_p1, draw_p2 = p2, p1
             color = "#C62828"
-        elif has_data and val > 0:
+        elif val > 0:
             draw_p1, draw_p2 = p1, p2
             color = "#1565C0"
         else:
             draw_p1, draw_p2 = p1, p2
             color = "#BDBDBD"
 
-        weight  = max(1.5, min(10, abs(val) * 0.04)) if has_data else 1.5
-        opacity = 0.85 if has_data else 0.35
+        weight  = max(1.5, min(10, abs(val) * 0.04))
+        opacity = 0.85
 
         folium.PolyLine(
             locations=[draw_p1, draw_p2],
-            color=color,
-            weight=weight,
-            opacity=opacity,
-            tooltip=f"{label}: {val:+.1f} GWh/d" if has_data else label,
+            color=color, weight=weight, opacity=opacity,
+            tooltip=f"{label}: {val:+.1f} GWh/d",
         ).add_to(m)
-
         arrow_marker(m, draw_p1, draw_p2, color)
+
+    # CZ centroid
+    folium.CircleMarker(
+        location=GAS_NODES["CZ"],
+        radius=10,
+        color="#333", weight=2,
+        fill=True, fill_color="#FF8F00",
+        fill_opacity=0.9,
+        tooltip="CZ — síťový uzel",
+    ).add_to(m)
 
     # Anotace datových bodů
     for name, cfg in POINTS_CONFIG.items():
