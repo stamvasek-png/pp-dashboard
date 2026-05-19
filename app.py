@@ -692,6 +692,9 @@ if show_gas:
                 ).fillna(0)
                 pivot_map.index = pd.to_datetime(pivot_map.index, utc=True)
 
+                st.write("Sloupce:", pivot_map.columns.tolist())
+                st.write("Počet řádků:", len(pivot_map))
+                st.write("Poslední řádek:", pivot_map.iloc[-2].to_dict() if len(pivot_map) >= 2 else "málo dat")
                 gas_map_html = build_gas_map(pivot_map)
                 st.components.v1.html(gas_map_html, height=520, scrolling=False)
 
