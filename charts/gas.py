@@ -307,7 +307,13 @@ def build_gas_map(pivot: pd.DataFrame) -> str:
 
     def get_val(key):
         if key is None: return 0.0
-        return float(last.get(key, 0) or 0)
+        val = last.get(key, 0)
+        if hasattr(val, "iloc"):
+            val = val.iloc[0] if len(val) > 0 else 0
+        try:
+            return float(val or 0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def arrow_marker(m, p1, p2, color, pos=0.65):
         lat = p1[0] * (1 - pos) + p2[0] * pos
