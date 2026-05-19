@@ -684,6 +684,8 @@ if show_gas:
                 from data.entsog import _short_name
                 pivot_map.columns = [_short_name(c) for c in pivot_map.columns]
 
+                st.write("pivot_map sloupce:", pivot_map.columns.tolist())
+                st.write("pivot_map tail:", pivot_map.tail(3))
                 gas_map_html = build_gas_map(pivot_map)
                 st.components.v1.html(gas_map_html, height=520, scrolling=False)
 
