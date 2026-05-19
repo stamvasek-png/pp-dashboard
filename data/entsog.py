@@ -52,14 +52,15 @@ def fetch_entsog_flows(days: int = 90) -> pd.DataFrame:
 
 def load_entsog_history() -> pd.DataFrame:
     """
-    Načte historická data z CSV (generovaného GitHub Actions).
-    Fallback na live API (posledních 90 dní) pokud CSV neexistuje.
+    Načte historická data ze souboru Parquet.
+    Fallback na live API (posledních 90 dní, jen CZ) pokud soubor neexistuje.
     """
-    csv_path = "data/history/entsog_cz_flows.csv"
-    if os.path.exists(csv_path):
-        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-        df.index = pd.to_datetime(df.index, utc=True).tz_convert("Europe/Prague")
+    parquet_path = "data/history/entsog_all_flows.parquet"
+    if os.path.exists(parquet_path):
+        df = pd.read_parquet(parquet_path)
+        df["date"] = pd.to_datetime(df["date"], utc=True)
         return df
+    # Fallback — jen CZ, 90 dní
     return fetch_entsog_flows(days=90)
 
 

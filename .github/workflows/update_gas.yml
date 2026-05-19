@@ -2,7 +2,7 @@ name: Update gas history
 
 on:
   schedule:
-    - cron: "0 6 * * *"   # každý den v 6:00 UTC
+    - cron: "0 5 * * *"   # každý den v 5:00 UTC
   workflow_dispatch:        # možnost spustit ručně
 
 jobs:
@@ -23,7 +23,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests pandas python-dateutil
+        run: pip install requests pandas python-dateutil pyarrow
 
       - name: Run update script
         run: python scripts/update_gas_history.py
