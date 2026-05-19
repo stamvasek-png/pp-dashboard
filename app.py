@@ -671,18 +671,16 @@ if show_gas:
                     df_map["value_GWh"], errors="coerce"
                 ).fillna(0)
 
-                df_cz = df_map[df_map["countryLabel"] == "Czechia"].copy()
-
                 from data.entsog import _short_name
-                df_cz["point_short"] = df_cz["pointsNames"].apply(_short_name)
+                df_map["point_short"] = df_map["pointsNames"].apply(_short_name)
 
                 entry = (
-                    df_cz[df_cz["directionKey"] == "entry"]
+                    df_map[df_map["directionKey"] == "entry"]
                     .groupby(["date", "point_short"])["value_GWh"]
                     .sum()
                 )
                 exit_ = (
-                    df_cz[df_cz["directionKey"] == "exit"]
+                    df_map[df_map["directionKey"] == "exit"]
                     .groupby(["date", "point_short"])["value_GWh"]
                     .sum()
                 )
