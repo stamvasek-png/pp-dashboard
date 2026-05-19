@@ -718,9 +718,11 @@ if show_gas:
                 st.markdown("---")
 
                 if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+                    ts_from = pd.Timestamp(date_range[0]).tz_localize("UTC")
+                    ts_to   = pd.Timestamp(date_range[1]).tz_localize("UTC")
                     df_range = df_hist[
-                        (df_hist["date"] >= pd.Timestamp(date_range[0])) &
-                        (df_hist["date"] <= pd.Timestamp(date_range[1]))
+                        (df_hist["date"] >= ts_from) &
+                        (df_hist["date"] <= ts_to)
                     ]
                 else:
                     df_range = df_hist
