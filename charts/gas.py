@@ -1,5 +1,4 @@
 import pandas as pd
-import folium
 import plotly.graph_objects as go
 import streamlit as st
 from data.entsog import POINTS_CONFIG
@@ -210,6 +209,7 @@ def fig_gas_point_history(pivot: pd.DataFrame, point: str, height: int = 260) ->
 
 def build_gas_map(pivot: pd.DataFrame) -> str:
     """Interaktivní mapa fyzických toků CZ."""
+    import folium
     if pivot.empty or len(pivot) < 2:
         return folium.Map(location=[49.8, 15.5], zoom_start=7, tiles="CartoDB positron")._repr_html_()
 
