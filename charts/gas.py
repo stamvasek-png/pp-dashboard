@@ -1,3 +1,4 @@
+import math
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -6,46 +7,6 @@ from data.entsog import POINTS_CONFIG
 FLOW_COLORS = [
     "#1565C0","#C62828","#2E7D32","#F57F17","#6A1B9A",
     "#00838F","#E65100","#4527A0","#558B2F","#AD1457",
-]
-
-GAS_NODES = {
-    "Brandov/Waidhaus (DE)": (50.61, 13.39),
-    "Lanžhot (SK)":          (48.72, 17.04),
-    "Český Těšín (PL)":      (49.75, 18.62),
-    "Zásobníky":             (49.75, 15.80),
-    "Distribuce":            (49.40, 16.20),
-    "Koneční spotřebitelé":  (49.10, 15.50),
-    "CZ":  (49.80, 15.50),
-    "DE":  (51.50, 10.00),
-    "SK":  (48.70, 19.50),
-    "PL":  (52.20, 20.00),
-    "AT":  (47.80, 13.50),
-    "HU":  (47.20, 19.00),
-    "NL":  (52.20,  5.30),
-    "FR":  (46.50,  2.50),
-    "BE":  (50.50,  4.50),
-    "IT":  (42.50, 12.50),
-    "DK":  (56.00,  9.50),
-}
-
-# Koridory: (uzel_od, uzel_do, label, datový_klíč_v_pivot)
-# Každý segment = jedna čára; data_key=None → šedá bez šipky
-GAS_CORRIDORS = [
-    ("DE",  "Brandov/Waidhaus (DE)", "DE→Brandov",        "Brandov/Waidhaus (DE)"),
-    ("Brandov/Waidhaus (DE)", "CZ",  "Brandov→CZ",        "Brandov/Waidhaus (DE)"),
-    ("CZ",  "Lanžhot (SK)",          "CZ→Lanžhot",        "Lanžhot (SK)"),
-    ("CZ",  "Český Těšín (PL)",      "CZ→Těšín",          "Český Těšín (PL)"),
-    ("CZ",  "Zásobníky",             "CZ→Zásobníky",      "Zásobníky"),
-    ("NL",  "DE",   "NL→DE Transit",  None),
-    ("FR",  "DE",   "FR→DE",          None),
-    ("DE",  "AT",   "DE→AT",          None),
-    ("AT",  "SK",   "AT→SK Transit",  None),
-    ("SK",  "HU",   "SK→HU",          None),
-    ("PL",  "Český Těšín (PL)", "PL→Těšín", None),
-    ("BE", "NL", "BE↔NL",  None),
-    ("BE", "FR", "BE↔FR",  None),
-    ("DK", "DE", "DK→DE Ellund", None),
-    ("IT", "AT", "IT→AT Tarvisio", None),
 ]
 
 
@@ -291,280 +252,236 @@ def fig_gas_point_history(pivot: pd.DataFrame, point: str, height: int = 260) ->
     return fig
 
 
-def build_gas_map(pivot_cz: pd.DataFrame,
-                  pivot_eu: pd.DataFrame = None) -> str:
-    """Interaktivní mapa fyzických toků CZ — čáry s šipkami."""
-    import folium
-    import numpy as np
+def fig_gas_map(df_history: pd.DataFrame, height: int = 580) -> go.Figure:
+    """Plotly Scattergeo — EU gas flows, CZ border crossing arrows."""
+    from data.entsog import _short_name
 
-    m = folium.Map(
-        location=[49.5, 11.0],
-        zoom_start=5,
-        tiles="CartoDB positron",
-    )
-
-    if not pivot_cz.empty and len(pivot_cz) >= 2:
-        # Seřaď podle data — nejnovější nakonec
-        pivot_cz = pivot_cz.sort_index()
-        last       = pivot_cz.iloc[-1]   # poslední dostupný den
-        prev       = pivot_cz.iloc[-2]   # předchozí den
-        dod        = last - prev
-        # dod_pct — bezpečně
-        dod_pct    = pd.Series(dtype=float)
-        for col in prev.index:
-            p = prev[col]
-            d = dod[col]
-            dod_pct[col] = (d / abs(p) * 100) if abs(p) > 0.01 else 0.0
-        date_label = pivot_cz.index[-1].strftime("%d.%m.%Y")
-    else:
-        last = pd.Series(dtype=float)
-        prev = pd.Series(dtype=float)
-        dod  = pd.Series(dtype=float)
-        dod_pct = pd.Series(dtype=float)
-        date_label = "N/A"
-
-    # EU country flows
-    if pivot_eu is not None and not pivot_eu.empty and len(pivot_eu) >= 2:
-        pivot_eu = pivot_eu.sort_index()
-        last_eu  = pivot_eu.iloc[-1]
-        prev_eu  = pivot_eu.iloc[-2]
-        dod_eu   = last_eu - prev_eu
-    else:
-        last_eu = dod_eu = pd.Series(dtype=float)
-
-    COUNTRY_TO_NODE = {
-        "Germany":     "DE",
-        "Netherlands": "NL",
-        "France":      "FR",
-        "Austria":     "AT",
-        "Slovakia":    "SK",
-        "Hungary":     "HU",
-        "Poland":      "PL",
-        "Belgium":     "BE",
-        "Italy":       "IT",
-        "Denmark":     "DK",
+    COUNTRY_COORDS = {
+        "Czechia":     (49.80, 15.50),
+        "Germany":     (51.50, 10.00),
+        "Slovakia":    (48.70, 19.50),
+        "Poland":      (52.20, 20.00),
+        "Austria":     (47.80, 13.50),
+        "Hungary":     (47.20, 19.00),
+        "Netherlands": (52.20,  5.30),
+        "France":      (46.50,  2.50),
+        "Belgium":     (50.50,  4.50),
+        "Italy":       (42.50, 12.50),
+        "Denmark":     (56.00,  9.50),
+        "Norway":      (62.00,  9.00),
+        "Romania":     (45.80, 24.97),
+        "Bulgaria":    (42.73, 25.49),
+        "Ukraine":     (49.00, 32.00),
     }
+    COUNTRY_FLAGS = {
+        "Czechia": "🇨🇿", "Germany": "🇩🇪", "Slovakia": "🇸🇰",
+        "Poland": "🇵🇱", "Austria": "🇦🇹", "Hungary": "🇭🇺",
+        "Netherlands": "🇳🇱", "France": "🇫🇷", "Belgium": "🇧🇪",
+        "Italy": "🇮🇹", "Denmark": "🇩🇰", "Norway": "🇳🇴",
+        "Romania": "🇷🇴", "Bulgaria": "🇧🇬", "Ukraine": "🇺🇦",
+    }
+    # (border_lat, border_lon)
+    CZ_BORDER_PTS = {
+        "Brandov/Waidhaus (DE)": (50.61, 13.39),
+        "Lanžhot (SK)":          (48.72, 17.04),
+        "Český Těšín (PL)":      (49.75, 18.62),
+    }
+    DOMESTIC = {"Storage", "Distribution", "Final Consumers", "Production", "LNG Terminals"}
 
-    def country_val(country):
-        try:
-            return float(last_eu[country]) if country in last_eu.index else 0.0
-        except Exception:
-            return 0.0
+    CZ_LAT, CZ_LON = COUNTRY_COORDS["Czechia"]
+    fig = go.Figure()
 
-    def country_dod(country):
-        try:
-            return float(dod_eu[country]) if country in dod_eu.index else 0.0
-        except Exception:
-            return 0.0
+    if df_history.empty:
+        fig.add_annotation(text="Žádná data", x=0.5, y=0.5,
+                           xref="paper", yref="paper", showarrow=False)
+        _geo_layout(fig, height, "N/A")
+        return fig
 
-    def scalar(s, key, default=0.0):
-        try:
-            if isinstance(s, pd.Series):
-                return float(s[key]) if key in s.index else default
-            return float(s.get(key, default))
-        except (TypeError, ValueError):
-            return default
+    df = df_history.copy()
+    df["date"] = pd.to_datetime(df["date"], utc=True)
+    df["value_GWh"] = pd.to_numeric(df.get("value_GWh", 0), errors="coerce").fillna(0)
 
-    def arrow_marker(m, p1, p2, color, pos=0.65):
-        lat = p1[0] * (1 - pos) + p2[0] * pos
-        lon = p1[1] * (1 - pos) + p2[1] * pos
-        angle = np.degrees(np.arctan2(p2[1] - p1[1], p2[0] - p1[0]))
-        folium.Marker(
-            [lat, lon],
-            icon=folium.DivIcon(
-                html=(
-                    f'<div style="font-size:16px;color:{color};'
-                    f'transform:rotate({-angle:.0f}deg);'
-                    f'text-shadow:1px 1px 2px white;'
-                    f'line-height:1">&#10148;</div>'
-                ),
-                icon_size=(20, 20),
-                icon_anchor=(10, 10),
-            ),
-        ).add_to(m)
+    last_date = df["date"].max()
+    mask_prev = df["date"] < last_date
+    prev_date = df.loc[mask_prev, "date"].max() if mask_prev.any() else pd.NaT
 
-    # Kresli koridory
-    for from_key, to_key, label, data_key in GAS_CORRIDORS:
-        p1 = GAS_NODES.get(from_key)
-        p2 = GAS_NODES.get(to_key)
-        if not p1 or not p2:
-            continue
+    def _net_eu(day):
+        sub = df[(df["date"] == day) & ~df["adjacentSystemsKey"].isin(DOMESTIC)]
+        e = sub[sub["directionKey"] == "entry"].groupby("countryLabel")["value_GWh"].sum()
+        x = sub[sub["directionKey"] == "exit"].groupby("countryLabel")["value_GWh"].sum()
+        idx = e.index.union(x.index)
+        return e.reindex(idx, fill_value=0) - x.reindex(idx, fill_value=0)
 
-        if data_key is None:
-            # Koridor bez dat — šedá tenká čára, bez šipky
-            folium.PolyLine(
-                locations=[p1, p2],
-                color="#BDBDBD", weight=1.5, opacity=0.3,
-                tooltip=label,
-            ).add_to(m)
-            continue
+    def _net_cz(day):
+        sub = df[(df["date"] == day) & (df["countryLabel"] == "Czechia")].copy()
+        sub["pt"] = sub["pointsNames"].apply(_short_name)
+        e = sub[sub["directionKey"] == "entry"].groupby("pt")["value_GWh"].sum()
+        x = sub[sub["directionKey"] == "exit"].groupby("pt")["value_GWh"].sum()
+        idx = e.index.union(x.index)
+        return e.reindex(idx, fill_value=0) - x.reindex(idx, fill_value=0)
 
-        val = scalar(last, data_key) if data_key else 0.0
+    net_eu_last = _net_eu(last_date)
+    net_cz_last = _net_cz(last_date)
 
-        if val < 0:
-            draw_p1, draw_p2 = p2, p1
-            color = "#C62828"
-        elif val > 0:
-            draw_p1, draw_p2 = p1, p2
-            color = "#1565C0"
-        else:
-            draw_p1, draw_p2 = p1, p2
-            color = "#BDBDBD"
+    if pd.notna(prev_date):
+        net_eu_prev = _net_eu(prev_date)
+        net_cz_prev = _net_cz(prev_date)
+        dod_eu = net_eu_last.subtract(net_eu_prev.reindex(net_eu_last.index, fill_value=0))
+        dod_cz = net_cz_last.subtract(net_cz_prev.reindex(net_cz_last.index, fill_value=0))
+    else:
+        dod_eu = pd.Series(0.0, index=net_eu_last.index)
+        dod_cz = pd.Series(0.0, index=net_cz_last.index)
 
-        weight  = max(1.5, min(10, abs(val) * 0.04))
-        opacity = 0.85
+    date_label = last_date.strftime("%d.%m.%Y") if pd.notna(last_date) else "N/A"
 
-        folium.PolyLine(
-            locations=[draw_p1, draw_p2],
-            color=color, weight=weight, opacity=opacity,
-            tooltip=f"{label}: {val:+.1f} GWh/d",
-        ).add_to(m)
-        arrow_marker(m, draw_p1, draw_p2, color)
-
-    # CZ centroid
-    folium.CircleMarker(
-        location=GAS_NODES["CZ"],
-        radius=10,
-        color="#333", weight=2,
-        fill=True, fill_color="#FF8F00",
-        fill_opacity=0.9,
-        tooltip="CZ — síťový uzel",
-    ).add_to(m)
-
-    # Uzly evropských zemí s daty
-    for country_label, node_key in COUNTRY_TO_NODE.items():
-        coords = GAS_NODES.get(node_key)
-        if not coords:
-            continue
-        val  = country_val(country_label)
-        dval = country_dod(country_label)
-
-        if abs(val) < 0.1:
-            color, radius = "#BDBDBD", 6
-        elif val > 0:
-            color, radius = "#1565C0", max(8, min(20, val * 0.02))
-        else:
-            color, radius = "#C62828", max(8, min(20, abs(val) * 0.02))
-
+    # ── CZ border crossing arrows ─────────────────────────────────
+    for pt_name, (b_lat, b_lon) in CZ_BORDER_PTS.items():
+        val  = float(net_cz_last.get(pt_name, 0.0))
+        dval = float(dod_cz.get(pt_name, 0.0))
+        cfg  = POINTS_CONFIG.get(pt_name, {})
+        flag = cfg.get("flag", "")
         sign  = "+" if val  >= 0 else ""
         dsign = "+" if dval >= 0 else ""
 
-        folium.CircleMarker(
-            location=coords,
-            radius=radius,
-            color=color, weight=2,
-            fill=True, fill_color=color, fill_opacity=0.7,
-            tooltip=(f"{country_label}: {sign}{val:.0f} GWh/d "
-                     f"(DoD: {dsign}{dval:.0f})"),
-            popup=folium.Popup(
-                f"<b>{country_label}</b><br>"
+        if val > 0:
+            lat1, lon1, lat2, lon2 = b_lat, b_lon, CZ_LAT, CZ_LON
+            color = "#1565C0"
+        elif val < 0:
+            lat1, lon1, lat2, lon2 = CZ_LAT, CZ_LON, b_lat, b_lon
+            color = "#C62828"
+        else:
+            lat1, lon1, lat2, lon2 = b_lat, b_lon, CZ_LAT, CZ_LON
+            color = "#9E9E9E"
+
+        width = max(2, min(10, abs(val) * 0.008))
+
+        fig.add_trace(go.Scattergeo(
+            lat=[lat1, lat2], lon=[lon1, lon2],
+            mode="lines",
+            line=dict(width=width, color=color),
+            opacity=0.75,
+            showlegend=False, hoverinfo="skip",
+        ))
+
+        # Arrow head at 65% of line
+        a_lat = lat1 * 0.35 + lat2 * 0.65
+        a_lon = lon1 * 0.35 + lon2 * 0.65
+        angle = math.degrees(math.atan2(lon2 - lon1, lat2 - lat1))
+        fig.add_trace(go.Scattergeo(
+            lat=[a_lat], lon=[a_lon],
+            mode="markers",
+            marker=dict(symbol="triangle-up", size=max(8, int(width * 2.5)),
+                        color=color, angle=angle, opacity=0.9),
+            showlegend=False,
+            hovertemplate=(
+                f"<b>{flag} {pt_name}</b><br>"
+                f"Tok: <b>{sign}{val:.1f} GWh/d</b><br>"
+                f"DoD: {dsign}{dval:.1f} GWh/d<extra></extra>"
+            ),
+        ))
+
+        # Flow label near border point
+        fig.add_trace(go.Scattergeo(
+            lat=[b_lat + 0.25], lon=[b_lon],
+            mode="text",
+            text=[f"{sign}{val:.0f}"],
+            textfont=dict(size=10, color=color, family="Arial Black"),
+            showlegend=False, hoverinfo="skip",
+        ))
+
+    # Storage node
+    stor_val  = float(net_cz_last.get("Zásobníky", 0.0))
+    stor_dval = float(dod_cz.get("Zásobníky", 0.0))
+    stor_color = "#6A1B9A" if stor_val < 0 else "#43A047"
+    stor_label = "vtláčení" if stor_val < 0 else "těžba"
+    stor_sign  = "+" if stor_val >= 0 else ""
+    stor_dsign = "+" if stor_dval >= 0 else ""
+    fig.add_trace(go.Scattergeo(
+        lat=[49.75], lon=[15.80],
+        mode="markers+text",
+        marker=dict(symbol="square", size=12, color=stor_color, opacity=0.85,
+                    line=dict(width=2, color="white")),
+        text=[f"🏭{stor_sign}{stor_val:.0f}"],
+        textposition="top right",
+        textfont=dict(size=9, color=stor_color),
+        showlegend=False,
+        hovertemplate=(
+            f"<b>🏭 Zásobníky</b><br>"
+            f"{stor_label}: <b>{abs(stor_val):.1f} GWh/d</b><br>"
+            f"DoD: {stor_dsign}{stor_dval:.1f} GWh/d<extra></extra>"
+        ),
+    ))
+
+    # ── EU country bubbles ────────────────────────────────────────
+    for country, (c_lat, c_lon) in COUNTRY_COORDS.items():
+        val  = float(net_eu_last.get(country, 0.0))
+        dval = float(dod_eu.get(country, 0.0))
+        flag = COUNTRY_FLAGS.get(country, "")
+        sign  = "+" if val  >= 0 else ""
+        dsign = "+" if dval >= 0 else ""
+        is_cz = country == "Czechia"
+
+        if abs(val) < 0.5:
+            color, size = "#9E9E9E", 8
+        elif val > 0:
+            color = "#1565C0"
+            size  = max(8, min(26, val * 0.015))
+        else:
+            color = "#C62828"
+            size  = max(8, min(26, abs(val) * 0.015))
+
+        fig.add_trace(go.Scattergeo(
+            lat=[c_lat], lon=[c_lon],
+            mode="markers+text",
+            marker=dict(
+                size=size,
+                color=color,
+                opacity=0.8,
+                line=dict(width=2.5 if is_cz else 1.5,
+                          color="#FF8F00" if is_cz else "white"),
+            ),
+            text=[f"{flag} {country[:4]}<br>{sign}{val:.0f}"],
+            textposition="top center",
+            textfont=dict(size=10 if is_cz else 9, color=color),
+            showlegend=False,
+            hovertemplate=(
+                f"<b>{flag} {country}</b><br>"
                 f"Net cross-border: <b>{sign}{val:.1f} GWh/d</b><br>"
                 f"DoD: {dsign}{dval:.1f} GWh/d<br>"
-                f"<span style='color:#888;font-size:10px'>"
-                f"+ = net importer, − = net exporter</span>",
-                max_width=220,
+                f"<i>+ = net importer, − = net exporter</i>"
+                f"<extra></extra>"
             ),
-        ).add_to(m)
+        ))
 
-        folium.Marker(
-            location=[coords[0] + 0.4, coords[1]],
-            icon=folium.DivIcon(
-                html=(
-                    f'<div style="font-size:10px;font-weight:bold;'
-                    f'color:{color};white-space:nowrap;'
-                    f'text-shadow:1px 1px 2px white">'
-                    f'{node_key}: {sign}{val:.0f}</div>'
-                ),
-                icon_size=(120, 18),
-                icon_anchor=(0, 0),
-            ),
-        ).add_to(m)
+    _geo_layout(fig, height, date_label)
+    return fig
 
-    # Anotace datových bodů
-    for name, cfg in POINTS_CONFIG.items():
-        coords = GAS_NODES.get(name)
-        if not coords:
-            continue
-        val   = scalar(last, name)
-        delta = scalar(dod, name)
-        dpct  = scalar(dod_pct, name)
-        sign  = "+" if val >= 0 else ""
-        dsign = "+" if delta >= 0 else ""
 
-        if name == "Zásobníky":
-            color      = "#6A1B9A" if val < 0 else "#43A047"
-            flow_label = f"vtláčení {abs(val):.1f} GWh/d" if val < 0 else f"těžba {abs(val):.1f} GWh/d"
-        elif val > 0:
-            color      = "#1565C0"
-            flow_label = f"import do CZ: {val:.1f} GWh/d"
-        elif val < 0:
-            color      = "#C62828"
-            flow_label = f"export z CZ: {abs(val):.1f} GWh/d"
-        else:
-            color      = "#9E9E9E"
-            flow_label = "bez toku"
+def _geo_layout(fig: go.Figure, height: int, date_label: str) -> None:
+    fig.update_layout(
+        height=height,
+        margin=dict(l=0, r=0, t=40, b=0),
+        title=dict(
+            text=f"Fyzické toky plynu — {date_label} (ENTSO-G)",
+            font=dict(size=14),
+            x=0.01,
+        ),
+        showlegend=False,
+        geo=dict(
+            scope="europe",
+            resolution=50,
+            showland=True,
+            landcolor="#F5F5F5",
+            showocean=True,
+            oceancolor="#E3F2FD",
+            showcoastlines=True,
+            coastlinecolor="#BDBDBD",
+            showcountries=True,
+            countrycolor="#E0E0E0",
+            showframe=False,
+            projection_type="mercator",
+            lonaxis=dict(range=[-5, 35]),
+            lataxis=dict(range=[43, 63]),
+        ),
+    )
 
-        if abs(dpct) < 1:   dod_str = "beze změny"
-        elif dpct > 0:      dod_str = f"▲ +{dpct:.1f}%"
-        else:               dod_str = f"▼ {dpct:.1f}%"
-
-        folium.CircleMarker(
-            location=coords,
-            radius=7,
-            color=color, weight=2,
-            fill=True, fill_color=color, fill_opacity=0.9,
-            popup=folium.Popup(
-                f"<div style='font-family:sans-serif;min-width:190px'>"
-                f"<b style='font-size:13px'>{cfg['flag']} {name}</b><br>"
-                f"<span style='color:#888;font-size:10px'>Fyzický tok (ENTSO-G)</span>"
-                f"<hr style='margin:4px 0'>"
-                f"<b>{flow_label}</b><br>"
-                f"<span style='color:{color}'>{dod_str} vs předchozí den</span><br>"
-                f"<span style='color:#888;font-size:10px'>"
-                f"Delta: {dsign}{delta:.1f} GWh/d · Datum: {date_label}</span>"
-                f"</div>",
-                max_width=240,
-            ),
-            tooltip=f"{cfg['flag']} {name}: {sign}{val:.0f} GWh/d",
-        ).add_to(m)
-
-        folium.Marker(
-            location=[coords[0] + 0.15, coords[1] + 0.05],
-            icon=folium.DivIcon(
-                html=(
-                    f'<div style="font-size:11px;font-weight:bold;'
-                    f'color:#333;white-space:nowrap;'
-                    f'text-shadow:1px 1px 2px white">'
-                    f'{cfg["flag"]} {name}</div>'
-                    f'<div style="font-size:13px;font-weight:bold;'
-                    f'color:{color};white-space:nowrap;'
-                    f'text-shadow:1px 1px 2px white">'
-                    f'{sign}{val:.0f} GWh/d</div>'
-                    f'<div style="font-size:10px;color:#666;'
-                    f'white-space:nowrap">{dod_str}</div>'
-                ),
-                icon_size=(200, 50),
-                icon_anchor=(0, 0),
-            ),
-        ).add_to(m)
-
-    legend_html = f"""
-    <div style="position:fixed;bottom:30px;left:30px;z-index:1000;
-         background:white;padding:12px 16px;border-radius:8px;
-         box-shadow:2px 2px 8px rgba(0,0,0,0.25);
-         font-size:11px;line-height:1.8">
-      <b style="font-size:12px">Fyzické toky plynu [GWh/d]</b><br>
-      <span style="color:#1565C0">&#9473;&#9473;&#10148;</span> Import do CZ<br>
-      <span style="color:#C62828">&#9473;&#9473;&#10148;</span> Export z CZ<br>
-      <span style="color:#43A047">&#9679;</span> Zásobník — těžba<br>
-      <span style="color:#6A1B9A">&#9679;</span> Zásobník — vtláčení<br>
-      <span style="color:#BDBDBD">&#9473;&#9473;&#10148;</span> Koridor bez dat<br>
-      <hr style="margin:4px 0">
-      <span style="font-size:10px;color:#444">
-        &#128197; Data: <b>{date_label}</b> (ENTSO-G)</span><br>
-      <i style="font-size:9px;color:#888">
-        Tloušťka čáry = objem · Klikni pro detail</i>
-    </div>
-    """
-    m.get_root().html.add_child(folium.Element(legend_html))
-    return m._repr_html_()
