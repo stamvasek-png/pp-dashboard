@@ -459,7 +459,6 @@ def fig_gas_map(df_history: pd.DataFrame, height: int = 580) -> go.Figure:
 
 def _geo_layout(fig: go.Figure, height: int, date_label: str) -> None:
     fig.update_layout(
-        height=height,
         margin=dict(l=0, r=0, t=40, b=0),
         title=dict(
             text=f"Fyzické toky plynu — {date_label} (ENTSO-G)",
@@ -470,18 +469,20 @@ def _geo_layout(fig: go.Figure, height: int, date_label: str) -> None:
         geo=dict(
             scope="europe",
             resolution=50,
-            showland=True,
-            landcolor="#F5F5F5",
-            showocean=True,
-            oceancolor="#E3F2FD",
-            showcoastlines=True,
-            coastlinecolor="#BDBDBD",
-            showcountries=True,
-            countrycolor="#E0E0E0",
-            showframe=False,
-            projection_type="mercator",
-            lonaxis=dict(range=[-5, 35]),
-            lataxis=dict(range=[43, 63]),
+            showland=True,      landcolor="#F5F5F5",
+            showocean=True,     oceancolor="#EAF4FB",
+            showlakes=False,
+            showrivers=False,
+            showcountries=True, countrycolor="#CCCCCC",
+            countrywidth=0.8,
+            showsubunits=False,
+            showcoastlines=True, coastlinecolor="#CCCCCC",
+            center=dict(lat=49, lon=13),
+            projection_scale=3.5,
+            lonaxis=dict(range=[-10, 40]),
+            lataxis=dict(range=[35, 65]),
         ),
+        height=800,
+        autosize=True,
     )
 

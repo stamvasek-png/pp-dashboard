@@ -665,7 +665,11 @@ if show_gas:
             if df_hist_map.empty:
                 st.warning("Data nejsou dostupná.")
             else:
-                st.plotly_chart(fig_gas_map(df_hist_map), use_container_width=True)
+                st.plotly_chart(
+                    fig_gas_map(df_hist_map),
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
 
         with tab_bar:
             df_hist = load_entsog_history()
