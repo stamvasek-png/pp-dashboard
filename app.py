@@ -341,11 +341,13 @@ def _fig_ceps_combined_with_pred(df_ceps_imbal, df_ceps_price, ceps_load_series,
     fig = _orig_fig(df_ceps_imbal, df_ceps_price, ceps_load_series, load_fc, now_ceps)
 
     # Predikční trace — lazy import aby nepadal při chybějícím joblib/modelu
+    # secondary_y=False zajistí umístění na primární osu "MW (odchylka)",
+    # ne na sekundární "MW (zatížení)" se zcela jiným rozsahem (~5000-10000 MW).
     try:
         from tab_model import get_prediction_trace
         pred_trace = get_prediction_trace()
         if pred_trace is not None:
-            fig.add_trace(pred_trace)
+            fig.add_trace(pred_trace, secondary_y=False)
     except Exception:
         pass
 
