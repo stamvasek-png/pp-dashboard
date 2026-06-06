@@ -1,11 +1,20 @@
+from functools import lru_cache
+
 import pandas as pd
 import streamlit as st
 from entsoe import EntsoePandasClient
 
 from config import ENTSOE_TOKEN
+from data.store import load_snapshot
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  Dvě vrstvy:                                                  ║
+# ║   *_live()  → reálné API volání, spouští CRON                 ║
+# ║   fetch_*() → čtení snapshotu (fallback na live), volá APP    ║
+# ╚══════════════════════════════════════════════════════════════╝
 
 
-@st.cache_resource
+@lru_cache(maxsize=1)
 def _get_client():
     return EntsoePandasClient(api_key=ENTSOE_TOKEN)
 
@@ -13,8 +22,8 @@ def _get_client():
 client = _get_client()
 
 
-@st.cache_data(ttl=60 * 30, show_spinner=False)
-def fetch_entsoe_data():
+# ── LIVE (cron) ──────────────────────────────────────────────────
+def fetch_entsoe_data_live():
     now        = pd.Timestamp.now(tz="Europe/Prague")
     start_day  = now.normalize()
     end_imbal  = now + pd.Timedelta(hours=1)
@@ -78,8 +87,7 @@ def fetch_entsoe_data():
     return imbal, gen_actual, load_actual, load_fc, raw_out, now
 
 
-@st.cache_data(ttl=60 * 15, show_spinner=False)
-def fetch_dap(day_offset: int = 0):
+def fetch_dap_live(day_offset: int = 0):
     now   = pd.Timestamp.now(tz="Europe/Prague")
     start = now.normalize() + pd.Timedelta(days=day_offset)
     if start.tzinfo is None:
@@ -99,8 +107,7 @@ def fetch_dap(day_offset: int = 0):
     return raw.dropna()
 
 
-@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
-def fetch_installed_capacity():
+def fetch_installed_capacity_live():
     now   = pd.Timestamp.now(tz="Europe/Prague")
     start = now.normalize()
     end   = start + pd.Timedelta(days=1)
@@ -116,8 +123,7 @@ def fetch_installed_capacity():
         return pd.Series(dtype=float)
 
 
-@st.cache_data(ttl=60 * 15, show_spinner=False)
-def fetch_activation_prices():
+def fetch_activation_prices_live():
     now   = pd.Timestamp.now(tz="Europe/Prague")
     start = now.normalize()
     end   = now + pd.Timedelta(hours=1)
@@ -139,8 +145,7 @@ def fetch_activation_prices():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=60 * 30, show_spinner=False)
-def fetch_wind_solar_forecast():
+def fetch_wind_solar_forecast_live():
     now       = pd.Timestamp.now(tz="Europe/Prague")
     start_day = now.normalize()
     end_day   = start_day + pd.Timedelta(days=2)
@@ -163,8 +168,7 @@ def fetch_wind_solar_forecast():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=60 * 60, show_spinner=False)
-def fetch_reserves():
+def fetch_reserves_live():
     now      = pd.Timestamp.now(tz="Europe/Prague")
     start    = now.normalize()
     end      = now.normalize() + pd.Timedelta(days=10)
@@ -190,3 +194,40 @@ def fetch_reserves():
         mfrr_d_pri = _q(client.query_contracted_reserve_prices,  "A52", "A01", start, end),
         now=now, start=start, end=end,
     )
+
+
+# ── READER (app) — čte snapshot, fallback na live ────────────────
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_entsoe_data():
+    snap = load_snapshot("entsoe_data")
+    return snap if snap is not None else fetch_entsoe_data_live()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_dap(day_offset: int = 0):
+    snap = load_snapshot(f"dap_{day_offset}")
+    return snap if snap is not None else fetch_dap_live(day_offset)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_installed_capacity():
+    snap = load_snapshot("installed_capacity")
+    return snap if snap is not None else fetch_installed_capacity_live()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_activation_prices():
+    snap = load_snapshot("activation_prices")
+    return snap if snap is not None else fetch_activation_prices_live()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_wind_solar_forecast():
+    snap = load_snapshot("wind_solar_forecast")
+    return snap if snap is not None else fetch_wind_solar_forecast_live()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_reserves():
+    snap = load_snapshot("reserves")
+    return snap if snap is not None else fetch_reserves_live()

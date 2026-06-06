@@ -1,1 +1,8 @@
 __pycache__/
+
+# Runtime snapshoty (generuje cron) — neverzujeme
+data/snapshots/*.pkl
+
+# Lokální konfigurace / tajemství
+.env
+.streamlit/secrets.toml

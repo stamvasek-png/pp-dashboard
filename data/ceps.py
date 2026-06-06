@@ -1,12 +1,21 @@
+from functools import lru_cache
+
 import pandas as pd
 import streamlit as st
 from zeep import Client as SoapClient
 
+from data.store import load_snapshot
+
 CEPS_WSDL = "https://www.ceps.cz/_layouts/CepsData.asmx?WSDL"
 CEPS_NS   = "https://www.ceps.cz/CepsData/StructuredData/1.0"
 
+# ╔══════════════════════════════════════════════════════════════╗
+# ║   *_live()  → reálné SOAP volání, spouští CRON               ║
+# ║   fetch_*() → čtení snapshotu (fallback na live), volá APP   ║
+# ╚══════════════════════════════════════════════════════════════╝
 
-@st.cache_resource
+
+@lru_cache(maxsize=1)
 def _get_ceps_client():
     return SoapClient(wsdl=CEPS_WSDL)
 
@@ -28,8 +37,8 @@ def _parse_ceps(result) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("time") if rows else pd.DataFrame()
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_ceps_imbalance():
+# ── LIVE (cron) ──────────────────────────────────────────────────
+def fetch_ceps_imbalance_live():
     """Systémová odchylka ČR z ČEPS — minutová, ~5min zpoždění."""
     now   = pd.Timestamp.now(tz="Europe/Prague")
     start = now.normalize()
@@ -52,8 +61,7 @@ def fetch_ceps_imbalance():
         return pd.DataFrame(), now
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_ceps_svr():
+def fetch_ceps_svr_live():
     """Aktivace SVR v ČR z ČEPS — minutová, ~5min zpoždění."""
     now   = pd.Timestamp.now(tz="Europe/Prague")
     start = now.normalize()
@@ -83,8 +91,7 @@ def fetch_ceps_svr():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=60 * 15, show_spinner=False)
-def fetch_ceps_imbalance_price():
+def fetch_ceps_imbalance_price_live():
     """Odhadovaná cena odchylky z ČEPS — 15min, CZK/MWh."""
     now   = pd.Timestamp.now(tz="Europe/Prague")
     today = now.normalize()
@@ -108,9 +115,8 @@ def fetch_ceps_imbalance_price():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_ceps_all():
-    """Stáhne všechna ČEPS data najednou — jeden cache entry."""
+def fetch_ceps_all_live():
+    """Stáhne všechna ČEPS data najednou — jeden snapshot."""
     now   = pd.Timestamp.now(tz="Europe/Prague")
     start = now.normalize()
 
@@ -161,3 +167,28 @@ def fetch_ceps_all():
         "gen": df_gen, "res": df_res, "freq": df_freq,
         "cb": df_cb, "cena": df_cena, "now": now,
     }
+
+
+# ── READER (app) — čte snapshot, fallback na live ────────────────
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_ceps_imbalance():
+    snap = load_snapshot("ceps_imbalance")
+    return snap if snap is not None else fetch_ceps_imbalance_live()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_ceps_svr():
+    snap = load_snapshot("ceps_svr")
+    return snap if snap is not None else fetch_ceps_svr_live()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_ceps_imbalance_price():
+    snap = load_snapshot("ceps_imbalance_price")
+    return snap if snap is not None else fetch_ceps_imbalance_price_live()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_ceps_all():
+    snap = load_snapshot("ceps_all")
+    return snap if snap is not None else fetch_ceps_all_live()

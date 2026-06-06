@@ -4,6 +4,8 @@ import pandas as pd
 import streamlit as st
 from datetime import date, timedelta
 
+from data.store import load_snapshot
+
 POINTS_CONFIG = {
     "Brandov/Waidhaus (DE)": {"lat": 50.608, "lon": 13.388, "flag": "🇩🇪"},
     "Lanžhot (SK)":          {"lat": 48.722, "lon": 17.044, "flag": "🇸🇰"},
@@ -22,8 +24,9 @@ def _short_name(s: str) -> str:
     if "Final" in s:                        return "Koneční spotřebitelé"
     return s[:35]
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_entsog_flows(days: int = 90) -> pd.DataFrame:
+
+# ── LIVE (cron) ──────────────────────────────────────────────────
+def fetch_entsog_flows_live(days: int = 90) -> pd.DataFrame:
     end   = date.today()
     start = end - timedelta(days=days)
     url = (
@@ -50,6 +53,14 @@ def fetch_entsog_flows(days: int = 90) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# ── READER (app) — čte snapshot, fallback na live ────────────────
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_entsog_flows(days: int = 90) -> pd.DataFrame:
+    snap = load_snapshot("entsog_flows")
+    return snap if snap is not None else fetch_entsog_flows_live(days=days)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_entsog_history() -> pd.DataFrame:
     """
     Načte historická data ze souboru Parquet.
@@ -61,9 +72,10 @@ def load_entsog_history() -> pd.DataFrame:
         df["date"] = pd.to_datetime(df["date"], utc=True)
         return df
     # Fallback — jen CZ, 90 dní
-    return fetch_entsog_flows(days=90)
+    return fetch_entsog_flows_live(days=90)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_gie_history() -> pd.DataFrame:
     """
     Načte historická data zásobníků z CSV.
