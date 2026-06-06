@@ -1,0 +1,11 @@
+.git
+.github
+.devcontainer
+__pycache__/
+**/__pycache__/
+*.pyc
+.streamlit/secrets.toml
+.env
+*.ipynb
+DEPLOY.md
+README.md

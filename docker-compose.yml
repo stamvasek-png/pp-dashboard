@@ -1,0 +1,46 @@
+# ── PP Dashboard — docker compose ───────────────────────────────
+# Spuštění na serveru:
+#   docker compose up -d --build
+#
+# Volitelně i s nginx reverse proxy (doména + místo pro HTTPS):
+#   docker compose --profile proxy up -d --build
+
+services:
+  app:
+    build: .
+    image: pp-dashboard:latest
+    restart: unless-stopped
+    # Port 8501 ven na server. Pokud používáš nginx (profil proxy),
+    # můžeš tenhle řádek smazat a nechat přístup jen přes proxy.
+    ports:
+      - "8501:8501"
+    environment:
+      # Token lze přepsat zvenčí; když nevyplníš, použije se výchozí z config.py
+      - ENTSOE_TOKEN=${ENTSOE_TOKEN:-}
+      - PORT=8501
+    volumes:
+      # Perzistence historických dat (gas history) i po rebuildu image
+      - ./data/history:/app/data/history
+      # Snapshoty od cronu — sdílené mezi rebuildy i viditelné z hostu
+      - ./data/snapshots:/app/data/snapshots
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # Volitelný reverse proxy — aktivní jen s `--profile proxy`
+  nginx:
+    image: nginx:alpine
+    profiles: ["proxy"]
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      # Pro HTTPS odkomentuj a doplň certifikáty (viz DEPLOY.md):
+      # - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # - ./deploy/certs:/etc/nginx/certs:ro

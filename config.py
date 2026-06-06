@@ -1,8 +1,12 @@
+import os
+
 import pandas as pd
 import plotly.graph_objects as go
 
 # ── KONFIGURACE ──────────────────────────────────────────────────
-ENTSOE_TOKEN = "95fa8cc7-1438-455b-9060-795d7c44d389"
+# Token lze přepsat env proměnnou ENTSOE_TOKEN (doporučeno na serveru);
+# bez ní se použije výchozí hodnota, takže lokální chování zůstává stejné.
+ENTSOE_TOKEN = os.getenv("ENTSOE_TOKEN") or "95fa8cc7-1438-455b-9060-795d7c44d389"
 THRESHOLD    = 20          # MWh — práh DEFICIT / SURPLUS
 PEAK_HOURS   = set(range(8, 20))
 DG_BASE      = "https://api.deltagreen.cz/api/proteus/external/v1"
