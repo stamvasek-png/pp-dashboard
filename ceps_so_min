@@ -48,11 +48,25 @@ DB_PATH = Path(__file__).parent / "data" / "ceps_odchylka.db"
 
 # ---------- SESSION (Playwright auto-refresh) ----------
 def _get_cookies_via_browser() -> dict:
-    """Spustí headless Chromium, načte ČEPS a vrátí session cookies."""
+    """Spustí headless Chromium, nastaví cc_cookie (consent) a získá session cookies."""
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(user_agent=HEADERS["User-Agent"])
+
+        # Přednastavíme souhlas s cookies — ČEPS pak vydá plnohodnotnou session
+        ctx.add_cookies([{
+            "name": "cc_cookie",
+            "value": json.dumps({
+                "level": ["necessary", "analytics"],
+                "revision": 0,
+                "data": None,
+                "rfc_cookie": False,
+            }),
+            "domain": "www.ceps.cz",
+            "path": "/",
+        }])
+
         page = ctx.new_page()
         page.goto(BASE, wait_until="networkidle", timeout=30_000)
         cookies = {c["name"]: c["value"] for c in ctx.cookies()}
@@ -61,7 +75,6 @@ def _get_cookies_via_browser() -> dict:
 
 
 def _build_session() -> requests.Session:
-    """Vytvoří requests.Session s cookies z Playwright."""
     cookies = _get_cookies_via_browser()
     s = requests.Session()
     for name, value in cookies.items():
@@ -99,7 +112,6 @@ def fetch_raw() -> dict:
 
 # ---------- PARSER ----------
 def parse_points(raw: dict) -> pd.DataFrame:
-    """AnyChart config → DataFrame [cas, odchylka_mw, held]."""
     cfg = raw["result"]
     if isinstance(cfg, str):
         cfg = json.loads(cfg)
@@ -120,7 +132,6 @@ def parse_points(raw: dict) -> pd.DataFrame:
 
 
 def get_odchylka() -> pd.DataFrame:
-    """Stáhne + vyparsuje aktuální systémovou odchylku. Vrací DataFrame."""
     return parse_points(fetch_raw())
 
 
@@ -150,7 +161,6 @@ def init_db() -> None:
 
 
 def store(df: pd.DataFrame) -> int:
-    """Uloží DataFrame do DB, přeskočí duplikáty. Vrátí počet nových řádků."""
     records = [
         (row.cas.isoformat(), row.odchylka_mw, int(row.held))
         for row in df.itertuples()
@@ -164,7 +174,6 @@ def store(df: pd.DataFrame) -> int:
 
 
 def fetch_db(limit: int = 1440) -> pd.DataFrame:
-    """Načte posledních N řádků z DB (výchozí = 1 den)."""
     with _db() as conn:
         df = pd.read_sql(
             f"SELECT * FROM ceps_odchylka ORDER BY cas DESC LIMIT {limit}",
@@ -175,7 +184,6 @@ def fetch_db(limit: int = 1440) -> pd.DataFrame:
 
 
 def sync() -> int:
-    """Stáhne aktuální den a uloží nové body. Vrátí počet nových řádků."""
     init_db()
     df = get_odchylka()
     return store(df)
