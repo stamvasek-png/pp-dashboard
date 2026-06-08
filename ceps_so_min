@@ -1,0 +1,135 @@
+# =========================================================
+# ČEPS – scraper aktuální systémové odchylky ČR (RT feed, 1min rozlišení)
+# =========================================================
+import json, time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+import requests
+import pandas as pd
+
+# ---------- KONFIGURACE ----------
+BASE = "https://www.ceps.cz/cs/data"
+
+# Cookie z DevTools. KLÍČOVÉ: PHPSESSID + ARRAffinity (Azure session affinity).
+# Časem vyprší -> při redirectu zkopíruj nový řádek 'cookie:' z DevTools
+# (request loadGraphData -> Headers -> Request Headers) a nahraď tenhle string.
+COOKIE = (
+    '_ga=GA1.1.1110021904.1775635803; '
+    'PHPSESSID=0ec7b6da4520ba40685b0d23c2af53d6; '
+    'cc_cookie={"level":["necessary","analytics"],"revision":0,"data":null,"rfc_cookie":false}; '
+    '_nss=1; '
+    'ARRAffinity=02b183f3e187238eddb9a3a48d79f48c7f8be131e432ce5a87452254fcb0bcab; '
+    'ARRAffinitySameSite=02b183f3e187238eddb9a3a48d79f48c7f8be131e432ce5a87452254fcb0bcab; '
+    '_ga_GB5X4KHL3C=GS2.1.s1780901355$o34$g1$t1780901392$j42$l0$h0'
+)
+
+PARAMS = {
+    "do": "loadGraphData",
+    "method": "AktualniSystemovaOdchylkaCR",
+    "graph_id": "1040",
+    "date_type": "day",
+    "interval": "false",
+    "version": "RT",          # real-time feed (svěžejší než API)
+    "function": "AVG",
+    "download": "false",
+}
+
+HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"),
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "cs,en;q=0.9",
+    "Referer": "https://www.ceps.cz/cs/data",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "X-Requested-With": "XMLHttpRequest",     # nutné pro Nette AJAX
+}
+if COOKIE:
+    HEADERS["Cookie"] = COOKIE
+
+TZ = ZoneInfo("Europe/Prague")
+TIMEOUT = 15
+_session = requests.Session()
+
+
+# ---------- SCRAPER ----------
+def fetch_raw():
+    """Stáhne JSON z ČEPS. Hodí výjimku, když přijde redirect (vypršelá session)."""
+    r = _session.get(BASE, headers=HEADERS, params=PARAMS, timeout=TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+    if isinstance(data, dict) and "redirect" in data:
+        raise RuntimeError(
+            "Redirect = vypršela session. Zkopíruj z DevTools nový řádek "
+            "'cookie:' (hlavně PHPSESSID + ARRAffinity) a nahraď COOKIE výše."
+        )
+    return data
+
+
+# ---------- PARSER ----------
+def parse_points(raw):
+    """AnyChart config -> DataFrame [cas, odchylka_mw, held].
+    held=True = ČEPS opakuje poslední hodnotu (forward-fill, ne reálné měření)."""
+    cfg = raw["result"]
+    if isinstance(cfg, str):
+        cfg = json.loads(cfg)
+    data = cfg["chart"]["series"][0]["data"]
+    rows = []
+    for p in data:
+        cas = datetime.strptime(p["x"], "%d.%m.%Y %H:%M").replace(tzinfo=TZ)
+        rows.append((cas, float(p["value"])))
+    df = pd.DataFrame(rows, columns=["cas", "odchylka_mw"])
+    df = (df.dropna()
+            .drop_duplicates("cas")
+            .sort_values("cas")
+            .reset_index(drop=True))
+    df["held"] = df["odchylka_mw"].round(4).eq(df["odchylka_mw"].round(4).shift())
+    return df
+
+
+def get_odchylka():
+    """Stáhne + vyparsuje aktuální systémovou odchylku. Vrací DataFrame."""
+    return parse_points(fetch_raw())
+
+
+# ---------- POLLING DO CSV (volitelné) ----------
+def poll(output_csv="ceps_odchylka.csv", interval_sec=30, max_minutes=120):
+    """Dotahuje data v intervalu, dedupuje podle času, appenduje do CSV.
+    Pro Drive: output_csv='/content/drive/MyDrive/ceps_odchylka.csv' (+ drive.mount)."""
+    try:
+        hist = pd.read_csv(output_csv, parse_dates=["cas"])
+        seen = set(hist["cas"].astype(str))
+        print(f"Načteno {len(hist)} existujících řádků.")
+    except FileNotFoundError:
+        seen = set()
+        print("Začínám nový soubor.")
+    print(f"Polling {interval_sec}s, max {max_minutes} min. Stop tlačítkem.\n")
+    t_end = time.time() + max_minutes * 60
+    while time.time() < t_end:
+        try:
+            new = get_odchylka()
+            new = new[~new["cas"].astype(str).isin(seen)]
+            if not new.empty:
+                new.to_csv(output_csv, mode="a", header=not seen, index=False)
+                seen.update(new["cas"].astype(str))
+                r = new.iloc[-1]
+                print(f"[{datetime.now(TZ):%H:%M:%S}] +{len(new)} nových, "
+                      f"poslední {r['cas']:%H:%M:%S} = {r['odchylka_mw']:.1f} MW", flush=True)
+            else:
+                print(f"[{datetime.now(TZ):%H:%M:%S}] beze změny", flush=True)
+        except Exception as e:
+            print(f"[CHYBA] {type(e).__name__}: {e}", flush=True)
+        time.sleep(interval_sec)
+    print("\nHotovo.")
+
+
+# ---------- SPUŠTĚNÍ ----------
+df = get_odchylka()
+ted = datetime.now(TZ)
+delay = (ted - df.iloc[-1]["cas"]).total_seconds() / 60
+print(f"Řádků: {len(df)}  | rozsah: {df['cas'].min():%H:%M} – {df['cas'].max():%H:%M}")
+print(f"Forward-fill (held=True): {int(df['held'].sum())}")
+print(f"Poslední bod: {df.iloc[-1]['cas']:%Y-%m-%d %H:%M} = {df.iloc[-1]['odchylka_mw']:.1f} MW")
+print(f"Delay feedu:  {delay:.1f} min (teď {ted:%H:%M:%S})")
+df.tail(10)
