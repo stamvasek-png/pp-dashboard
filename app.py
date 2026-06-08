@@ -65,6 +65,114 @@ def _so_realtime_chart():
     st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
                     use_container_width=True, config={"displayModeBar": False})
 
+@st.fragment(run_every=60)
+def _banner_kpi(gen_raw, df_out, changes, df_imbal, show_gas, now):
+    from data.ceps import fetch_ceps_imbalance
+    if show_gas:
+        st.markdown(
+            '<div class="banner banner-ok">'
+            '<div class="banner-left"><span class="pulse-dot"></span>'
+            '<span>🔵 PP DASHBOARD — PLYN</span></div>'
+            '<div class="banner-center"></div>'
+            '<div class="banner-right">'
+            + pd.Timestamp.now(tz="Europe/Prague").strftime("%a %d.%m.%Y · %H:%M:%S") +
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
+        return
+    df_rt, now_rt = fetch_ceps_imbalance()
+    if not df_rt.empty:
+        last_imbal = float(df_rt["odchylka_MW"].iloc[-1])
+        spark_vals = df_rt["odchylka_MW"].tail(96).tolist()
+        unit = "MW"
+    elif not df_imbal.empty:
+        last_imbal = float(df_imbal["odchylka_MWh"].iloc[-1])
+        spark_vals = df_imbal["odchylka_MWh"].tail(96).tolist()
+        unit = "MWh"
+    else:
+        last_imbal, spark_vals, unit = 0.0, [], "MW"
+
+    if last_imbal < -THRESHOLD:
+        bcls, bstate = "banner-bad",  f"DEFICIT &nbsp; {last_imbal:+.1f} {unit}"
+    elif last_imbal > THRESHOLD:
+        bcls, bstate = "banner-warn", f"SURPLUS &nbsp; {last_imbal:+.1f} {unit}"
+    else:
+        bcls, bstate = "banner-ok",   f"VYVÁŽENO &nbsp; {last_imbal:+.1f} {unit}"
+
+    ts = now_rt if not df_rt.empty else now
+    data_age = (pd.Timestamp.now(tz="Europe/Prague") - ts).total_seconds() / 60
+    fresh    = f"{data_age:.0f} min" if data_age < 60 else f"{data_age/60:.1f} h ⚠"
+
+    st.markdown(
+        f'<div class="banner {bcls}">' +
+        f'<div class="banner-left"><span class="pulse-dot"></span><span>⚡ PP DASHBOARD</span></div>' +
+        f'<div class="banner-center">{bstate}</div>' +
+        f'<div class="banner-right">{ts.strftime("%a %d.%m.%Y · %H:%M:%S")}' +
+        f'<span class="fresh-badge">{fresh}</span></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    n_pu  = int((df_out["unit_level"] == "PU").sum()) if not df_out.empty else 0
+    n_gu  = int((df_out["unit_level"] == "GU").sum()) if not df_out.empty else 0
+    n_new = len(changes["new"])
+    total_unavail = float(df_out["unavailable_MW"].sum()) if not df_out.empty else 0.0
+    total_install = float(df_out["installed_MW"].sum())   if not df_out.empty else 0.0
+    unavail_pct   = total_unavail / total_install * 100   if total_install else 0.0
+    cur_gen = (float(gen_raw.dropna(how="all").tail(1).iloc[0].sum(skipna=True))
+               if not gen_raw.empty and not gen_raw.dropna(how="all").empty else 0.0)
+    last_short = (float(df_imbal["price_Short"].dropna().iloc[-1])
+                  if "price_Short" in df_imbal and df_imbal["price_Short"].notna().any() else None)
+    spark_i    = sparkline_svg(spark_vals, C_DEFICIT if last_imbal < 0 else C_SURPLUS)
+    spark_g    = (sparkline_svg(gen_raw.fillna(0).sum(axis=1).tail(96).tolist(), C_OK)
+                  if not gen_raw.empty else "")
+    imbal_col   = C_DEFICIT if last_imbal < -THRESHOLD else (C_SURPLUS if last_imbal > THRESHOLD else C_TEXT)
+    unavail_col = C_DEFICIT if unavail_pct > 30 else (C_WARN if unavail_pct > 15 else C_OK)
+
+    kpi_html = f"""
+    <div class="kpi-row">
+      <div class="kpi-card" style="border-top-color:{imbal_col}">
+        <div class="kpi-label">Systémová odchylka</div>
+        <div class="kpi-value" style="color:{imbal_col}">{last_imbal:+.1f}<span style="font-size:.9rem;color:{C_MUTED}"> {unit}</span></div>
+        <div class="kpi-sub">práh ±{THRESHOLD} {unit}</div>
+        <div>{spark_i}</div>
+      </div>
+      <div class="kpi-card" style="border-top-color:{C_OK}">
+        <div class="kpi-label">Aktuální výroba</div>
+        <div class="kpi-value">{cur_gen:,.0f}<span style="font-size:.9rem;color:{C_MUTED}"> MW</span></div>
+        <div class="kpi-sub">posledních 24 h</div>
+        <div>{spark_g}</div>
+      </div>
+      <div class="kpi-card" style="border-top-color:{unavail_col}">
+        <div class="kpi-label">Výpadek kapacit</div>
+        <div class="kpi-value" style="color:{unavail_col}">{total_unavail:,.0f}<span style="font-size:.9rem;color:{C_MUTED}"> MW</span></div>
+        <div class="kpi-sub">z {total_install:,.0f} MW instalovaných · {unavail_pct:.0f}%</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Aktivní odstávky</div>
+        <div class="kpi-value">{n_pu + n_gu}</div>
+        <div class="kpi-sub">PU {n_pu} · GU {n_gu}{f' · <span style="color:{C_NEW};font-weight:600">+{n_new} nových</span>' if n_new else ''}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Cena odchylky (Short)</div>
+        <div class="kpi-value">{f'{last_short:,.0f}' if last_short is not None else '—'}<span style="font-size:.9rem;color:{C_MUTED}"> €/MWh</span></div>
+        <div class="kpi-sub">CZ imbalance price</div>
+      </div>"""
+    st.markdown(kpi_html, unsafe_allow_html=True)
+
+    if n_new or len(changes.get("ended", set())) or not changes["changed_mw"].empty:
+        n_ended = len(changes.get("ended", set()))
+        n_chmw  = len(changes["changed_mw"])
+        parts   = []
+        if n_new:
+            parts.append(f"🆕 <strong>{n_new} nových</strong> odstávek")
+        if n_ended:
+            parts.append(f"✅ <strong>{n_ended} ukončených</strong>")
+        if n_chmw:
+            parts.append(f"⚡ <strong>{n_chmw} změn MW</strong>")
+        st.markdown(f'<div class="alert-box">{"  ·  ".join(parts)}</div>',
+                    unsafe_allow_html=True)
+
+
 
 st.set_page_config(
     page_title="PP Dashboard",
@@ -179,104 +287,7 @@ with st.spinner("Načítám data rezerv…"):
 df_act  = fetch_activation_prices()
 ws_raw  = fetch_wind_solar_forecast()
 
-last_imbal = float(df_imbal["odchylka_MWh"].iloc[-1]) if not df_imbal.empty else 0.0
-
-if not show_gas:
-    # ── BANNER ───────────────────────────────────────────────────────
-    if last_imbal < -THRESHOLD:
-        bcls, bstate = "banner-bad",  f"DEFICIT &nbsp; {last_imbal:+.1f} MWh"
-    elif last_imbal > THRESHOLD:
-        bcls, bstate = "banner-warn", f"SURPLUS &nbsp; {last_imbal:+.1f} MWh"
-    else:
-        bcls, bstate = "banner-ok",   f"VYVÁŽENO &nbsp; {last_imbal:+.1f} MWh"
-
-    data_age = (pd.Timestamp.now(tz="Europe/Prague") - now).total_seconds() / 60
-    fresh    = f"{data_age:.0f} min" if data_age < 60 else f"{data_age/60:.1f} h ⚠"
-
-    st.markdown(
-        f'<div class="banner {bcls}">'
-        f'<div class="banner-left"><span class="pulse-dot"></span><span>⚡ PP DASHBOARD</span></div>'
-        f'<div class="banner-center">{bstate}</div>'
-        f'<div class="banner-right">{now.strftime("%a %d.%m.%Y · %H:%M:%S")}'
-        f'<span class="fresh-badge">{fresh}</span></div></div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── KPI STRIP ────────────────────────────────────────────────────
-    n_pu  = int((df_out["unit_level"] == "PU").sum()) if not df_out.empty else 0
-    n_gu  = int((df_out["unit_level"] == "GU").sum()) if not df_out.empty else 0
-    n_new = len(changes["new"])
-    total_unavail = float(df_out["unavailable_MW"].sum()) if not df_out.empty else 0.0
-    total_install = float(df_out["installed_MW"].sum())   if not df_out.empty else 0.0
-    unavail_pct   = total_unavail / total_install * 100   if total_install else 0.0
-    cur_gen = (float(gen_raw.dropna(how="all").tail(1).iloc[0].sum(skipna=True))
-               if not gen_raw.empty and not gen_raw.dropna(how="all").empty else 0.0)
-    last_short = (float(df_imbal["price_Short"].dropna().iloc[-1])
-                  if "price_Short" in df_imbal and df_imbal["price_Short"].notna().any() else None)
-    spark_i = sparkline_svg(df_imbal["odchylka_MWh"].tail(96).tolist(),
-                            C_DEFICIT if last_imbal < 0 else C_SURPLUS)
-    spark_g = (sparkline_svg(gen_raw.fillna(0).sum(axis=1).tail(96).tolist(), C_OK)
-               if not gen_raw.empty else "")
-    imbal_col   = C_DEFICIT if last_imbal < -THRESHOLD else (C_SURPLUS if last_imbal > THRESHOLD else C_TEXT)
-    unavail_col = C_DEFICIT if unavail_pct > 30 else (C_WARN if unavail_pct > 15 else C_OK)
-
-    kpi_html = f"""
-    <div class="kpi-row">
-      <div class="kpi-card" style="border-top-color:{imbal_col}">
-        <div class="kpi-label">Systémová odchylka</div>
-        <div class="kpi-value" style="color:{imbal_col}">{last_imbal:+.1f}<span style="font-size:.9rem;color:{C_MUTED}"> MWh</span></div>
-        <div class="kpi-sub">práh ±{THRESHOLD} MWh</div>
-        <div>{spark_i}</div>
-      </div>
-      <div class="kpi-card" style="border-top-color:{C_OK}">
-        <div class="kpi-label">Aktuální výroba</div>
-        <div class="kpi-value">{cur_gen:,.0f}<span style="font-size:.9rem;color:{C_MUTED}"> MW</span></div>
-        <div class="kpi-sub">posledních 24 h</div>
-        <div>{spark_g}</div>
-      </div>
-      <div class="kpi-card" style="border-top-color:{unavail_col}">
-        <div class="kpi-label">Výpadek kapacit</div>
-        <div class="kpi-value" style="color:{unavail_col}">{total_unavail:,.0f}<span style="font-size:.9rem;color:{C_MUTED}"> MW</span></div>
-        <div class="kpi-sub">z {total_install:,.0f} MW instalovaných · {unavail_pct:.0f}%</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Aktivní odstávky</div>
-        <div class="kpi-value">{n_pu + n_gu}</div>
-        <div class="kpi-sub">PU {n_pu} · GU {n_gu}{f' · <span style="color:{C_NEW};font-weight:600">+{n_new} nových</span>' if n_new else ''}</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Cena odchylky (Short)</div>
-        <div class="kpi-value">{f'{last_short:,.0f}' if last_short is not None else '—'}<span style="font-size:.9rem;color:{C_MUTED}"> €/MWh</span></div>
-        <div class="kpi-sub">CZ imbalance price</div>
-      </div>
-    </div>
-    """
-    st.markdown(kpi_html, unsafe_allow_html=True)
-
-    if n_new or len(changes.get("ended", set())) or not changes["changed_mw"].empty:
-        n_ended = len(changes.get("ended", set()))
-        n_chmw  = len(changes["changed_mw"])
-        parts   = []
-        if n_new:
-            parts.append(f"🆕 <strong>{n_new} nových</strong> odstávek")
-        if n_ended:
-            parts.append(f"✅ <strong>{n_ended} ukončených</strong>")
-        if n_chmw:
-            parts.append(f"⚡ <strong>{n_chmw} změn MW</strong>")
-        st.markdown(f'<div class="alert-box">{"  ·  ".join(parts)}</div>',
-                    unsafe_allow_html=True)
-
-else:
-    st.markdown(
-        '<div class="banner banner-ok">'
-        '<div class="banner-left"><span class="pulse-dot"></span>'
-        '<span>🔵 PP DASHBOARD — PLYN</span></div>'
-        '<div class="banner-center"></div>'
-        '<div class="banner-right">'
-        + pd.Timestamp.now(tz="Europe/Prague").strftime("%a %d.%m.%Y · %H:%M:%S") +
-        '</div></div>',
-        unsafe_allow_html=True,
-    )
+_banner_kpi(gen_raw, df_out, changes, df_imbal, show_gas, now)
 
 if not show_gas:
     # ── ZÁLOŽKY ──────────────────────────────────────────────────────
