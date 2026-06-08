@@ -17,6 +17,7 @@ from data.entsoe import (
 )
 from data.ceps import (
     fetch_ceps_imbalance, fetch_ceps_svr, fetch_ceps_imbalance_price, fetch_ceps_all,
+    fetch_ceps_load_from_db,
 )
 from data.deltagreen import fetch_deltagreen
 from data.entsog import fetch_entsog_flows, load_entsog_history
@@ -275,14 +276,7 @@ if not show_gas:
         def _so_realtime_chart():
             df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
             df_ceps_price = fetch_ceps_imbalance_price()
-            ceps_d = fetch_ceps_all()
-            _load_col = ("Load including pumping [MW]"
-                         if "Load including pumping [MW]" in ceps_d["load"].columns
-                         else "Load [MW]"
-                         if "Load [MW]" in ceps_d["load"].columns
-                         else None)
-            ceps_load_series = (ceps_d["load"][_load_col]
-                                if _load_col else pd.Series(dtype=float))
+            ceps_load_series = fetch_ceps_load_from_db()
             st.markdown('<div class="section-title">Systémová odchylka + zatížení + cena odchylky — ČEPS</div>',
                         unsafe_allow_html=True)
             st.plotly_chart(

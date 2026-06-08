@@ -198,6 +198,50 @@ def fetch_ceps_imbalance_from_db():
         return None
 
 
+def fetch_ceps_price_from_db():
+    """Načte cenu odchylky z DB (SOAP sync každých 10 min)."""
+    if not DB_PATH.exists():
+        return None
+    try:
+        now = pd.Timestamp.now(tz="Europe/Prague")
+        today = now.normalize().isoformat()
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql(
+            "SELECT cas, cena_czk_mwh FROM ceps_cena_odchylky WHERE cas >= ? ORDER BY cas",
+            conn, params=(today,), parse_dates=["cas"],
+        )
+        conn.close()
+        if df.empty:
+            return None
+        df["cas"] = pd.to_datetime(df["cas"], utc=True).dt.tz_convert("Europe/Prague")
+        df = df.set_index("cas").rename(columns={"cena_czk_mwh": "cena_CZK_MWh"})
+        df.index.name = "time"
+        return df
+    except Exception:
+        return None
+
+
+def fetch_ceps_load_from_db():
+    """Načte zatížení skutečnost z DB (SOAP sync každých 5 min)."""
+    if not DB_PATH.exists():
+        return pd.Series(dtype=float)
+    try:
+        now = pd.Timestamp.now(tz="Europe/Prague")
+        today = now.normalize().isoformat()
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql(
+            "SELECT cas, zatizeni_mw FROM ceps_zatizeni WHERE cas >= ? ORDER BY cas",
+            conn, params=(today,), parse_dates=["cas"],
+        )
+        conn.close()
+        if df.empty:
+            return pd.Series(dtype=float)
+        df["cas"] = pd.to_datetime(df["cas"], utc=True).dt.tz_convert("Europe/Prague")
+        return df.set_index("cas")["zatizeni_mw"].rename("zatizeni_MW")
+    except Exception:
+        return pd.Series(dtype=float)
+
+
 # ── READER (app) — čte snapshot, fallback na live ────────────────
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_ceps_imbalance():
@@ -216,6 +260,9 @@ def fetch_ceps_svr():
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_ceps_imbalance_price():
+    db = fetch_ceps_price_from_db()
+    if db is not None:
+        return db
     snap = load_snapshot("ceps_imbalance_price")
     return snap if snap is not None else fetch_ceps_imbalance_price_live()
 
