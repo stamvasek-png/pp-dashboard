@@ -1,4 +1,6 @@
+import sqlite3
 from functools import lru_cache
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -169,9 +171,39 @@ def fetch_ceps_all_live():
     }
 
 
+
+DB_PATH = Path(__file__).parent.parent / "data" / "ceps_odchylka.db"
+
+
+def fetch_ceps_imbalance_from_db():
+    """Načte dnešní systémovou odchylku z lokální SQLite DB (RT scraper, ~2min delay)."""
+    if not DB_PATH.exists():
+        return None
+    try:
+        now = pd.Timestamp.now(tz="Europe/Prague")
+        today = now.normalize().isoformat()
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql(
+            "SELECT cas, odchylka_mw FROM ceps_odchylka WHERE cas >= ? ORDER BY cas",
+            conn, params=(today,), parse_dates=["cas"],
+        )
+        conn.close()
+        if df.empty:
+            return None
+        df["cas"] = pd.to_datetime(df["cas"], utc=True).dt.tz_convert("Europe/Prague")
+        df = df.set_index("cas").rename(columns={"odchylka_mw": "odchylka_MW"})
+        df.index.name = "time"
+        return df, now
+    except Exception:
+        return None
+
+
 # ── READER (app) — čte snapshot, fallback na live ────────────────
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_ceps_imbalance():
+    db = fetch_ceps_imbalance_from_db()
+    if db is not None:
+        return db
     snap = load_snapshot("ceps_imbalance")
     return snap if snap is not None else fetch_ceps_imbalance_live()
 
