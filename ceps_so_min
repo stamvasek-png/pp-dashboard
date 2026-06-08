@@ -1,6 +1,7 @@
 # =========================================================
 # ČEPS – scraper systémové odchylky ČR (RT feed, 1min rozlišení)
-# Ukládá do SQLite. Session cookies se obnovují automaticky.
+# Session cookies získává automaticky přes Playwright (headless Chromium).
+# Ukládá do SQLite.
 # =========================================================
 import json
 import sqlite3
@@ -12,7 +13,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
-# ---------- KONFIGURACE ----------
 BASE = "https://www.ceps.cz/cs/data"
 
 PARAMS = {
@@ -34,7 +34,7 @@ HEADERS = {
     ),
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "Accept-Language": "cs,en;q=0.9",
-    "Referer": "https://www.ceps.cz/cs/data",
+    "Referer": BASE,
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
     "X-Requested-With": "XMLHttpRequest",
@@ -46,11 +46,26 @@ TIMEOUT = 15
 DB_PATH = Path(__file__).parent / "data" / "ceps_odchylka.db"
 
 
-# ---------- SESSION (auto-refresh) ----------
-def _new_session() -> requests.Session:
-    """Navštíví ČEPS homepage a získá čerstvé PHPSESSID + ARRAffinity cookies."""
+# ---------- SESSION (Playwright auto-refresh) ----------
+def _get_cookies_via_browser() -> dict:
+    """Spustí headless Chromium, načte ČEPS a vrátí session cookies."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(user_agent=HEADERS["User-Agent"])
+        page = ctx.new_page()
+        page.goto(BASE, wait_until="networkidle", timeout=30_000)
+        cookies = {c["name"]: c["value"] for c in ctx.cookies()}
+        browser.close()
+    return cookies
+
+
+def _build_session() -> requests.Session:
+    """Vytvoří requests.Session s cookies z Playwright."""
+    cookies = _get_cookies_via_browser()
     s = requests.Session()
-    s.get(BASE, headers={"User-Agent": HEADERS["User-Agent"]}, timeout=TIMEOUT)
+    for name, value in cookies.items():
+        s.cookies.set(name, value)
     return s
 
 
@@ -60,13 +75,13 @@ _session: requests.Session | None = None
 def _get_session() -> requests.Session:
     global _session
     if _session is None:
-        _session = _new_session()
+        _session = _build_session()
     return _session
 
 
 # ---------- SCRAPER ----------
 def fetch_raw() -> dict:
-    """Stáhne JSON z ČEPS. Při expirované session ji automaticky obnoví."""
+    """Stáhne JSON z ČEPS RT feedu. Při expiraci session automaticky obnoví."""
     global _session
     for attempt in range(2):
         s = _get_session()
@@ -74,10 +89,9 @@ def fetch_raw() -> dict:
         r.raise_for_status()
         data = r.json()
         if isinstance(data, dict) and "redirect" in data:
-            # Session vypršela → refresh a opakuj (max 1×)
-            _session = _new_session()
+            _session = _build_session()
             if attempt == 1:
-                raise RuntimeError("Session refresh selhal, ČEPS blokuje.")
+                raise RuntimeError("Session refresh přes Playwright selhal.")
             continue
         return data
     raise RuntimeError("fetch_raw: neočekávaný stav")
@@ -124,13 +138,12 @@ def _db():
 
 
 def init_db() -> None:
-    """Vytvoří tabulku pokud neexistuje."""
     with _db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ceps_odchylka (
-                cas       TEXT PRIMARY KEY,
-                odchylka_mw REAL NOT NULL,
-                held      INTEGER NOT NULL DEFAULT 0
+                cas         TEXT PRIMARY KEY,
+                odchylka_mw REAL    NOT NULL,
+                held        INTEGER NOT NULL DEFAULT 0
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cas ON ceps_odchylka (cas)")
@@ -161,17 +174,16 @@ def fetch_db(limit: int = 1440) -> pd.DataFrame:
     return df.sort_values("cas").reset_index(drop=True)
 
 
-# ---------- JEDNORÁZOVÝ SYNC (pro cron) ----------
 def sync() -> int:
     """Stáhne aktuální den a uloží nové body. Vrátí počet nových řádků."""
     init_db()
     df = get_odchylka()
-    new = store(df)
-    return new
+    return store(df)
 
 
 # ---------- SPUŠTĚNÍ (test) ----------
 if __name__ == "__main__":
+    print("Získávám cookies přes Playwright...")
     init_db()
     df = get_odchylka()
     new = store(df)
@@ -180,5 +192,5 @@ if __name__ == "__main__":
     print(f"Řádků: {len(df)} | nových v DB: {new}")
     print(f"Rozsah: {df['cas'].min():%H:%M} – {df['cas'].max():%H:%M}")
     print(f"Poslední bod: {df.iloc[-1]['cas']:%Y-%m-%d %H:%M} = {df.iloc[-1]['odchylka_mw']:.1f} MW")
-    print(f"Delay feedu: {delay:.1f} min")
+    print(f"Delay feedu:  {delay:.1f} min")
     print(f"DB: {DB_PATH}")
