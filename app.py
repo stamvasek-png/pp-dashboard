@@ -46,6 +46,25 @@ from charts.reserves import (
 )
 
 # ── PAGE CONFIG ─────────────────────────────────────────────────
+
+@st.fragment(run_every=60)
+def _so_realtime_chart(load_fc):
+    df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
+    df_ceps_price = fetch_ceps_imbalance_price()
+    ceps_load_series = fetch_ceps_load_from_db()
+    st.markdown('<div class="section-title">Systémová odchylka + zatížení + cena odchylky — ČEPS</div>',
+                unsafe_allow_html=True)
+    st.plotly_chart(
+        fig_ceps_combined(df_ceps_imbal, df_ceps_price, ceps_load_series, load_fc, now_ceps),
+        use_container_width=True, config={"displayModeBar": False},
+    )
+    st.markdown('<div class="section-title">Aktivace SVR v ČR — ČEPS (minutová)</div>',
+                unsafe_allow_html=True)
+    df_svr = fetch_ceps_svr()
+    st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
+                    use_container_width=True, config={"displayModeBar": False})
+
+
 st.set_page_config(
     page_title="PP Dashboard",
     page_icon="⚡",
@@ -272,24 +291,7 @@ if not show_gas:
 
     # ──────────── TAB 1: ODCHYLKA + GENERACE ─────────────────────────
     with tab_dash:
-        @st.fragment(run_every=60)
-        def _so_realtime_chart():
-            df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
-            df_ceps_price = fetch_ceps_imbalance_price()
-            ceps_load_series = fetch_ceps_load_from_db()
-            st.markdown('<div class="section-title">Systémová odchylka + zatížení + cena odchylky — ČEPS</div>',
-                        unsafe_allow_html=True)
-            st.plotly_chart(
-                fig_ceps_combined(df_ceps_imbal, df_ceps_price, ceps_load_series, load_fc, now_ceps),
-                use_container_width=True, config={"displayModeBar": False},
-            )
-            st.markdown('<div class="section-title">Aktivace SVR v ČR — ČEPS (minutová)</div>',
-                        unsafe_allow_html=True)
-            df_svr = fetch_ceps_svr()
-            st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
-                            use_container_width=True, config={"displayModeBar": False})
-
-        _so_realtime_chart()
+        _so_realtime_chart(load_fc)
 
         st.markdown('<div class="section-title">Balancing strategie</div>', unsafe_allow_html=True)
         st.info(
