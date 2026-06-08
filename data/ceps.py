@@ -242,6 +242,27 @@ def fetch_ceps_load_from_db():
         return pd.Series(dtype=float)
 
 
+def fetch_load_fc_from_db() -> "pd.Series":
+    """Načte prognózu zatížení D+1 z DB (ENTSO-E sync 1x denně ve 23:00)."""
+    if not DB_PATH.exists():
+        return pd.Series(dtype=float, name="forecast_MW")
+    try:
+        now = pd.Timestamp.now(tz="Europe/Prague")
+        today = now.normalize().isoformat()
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql(
+            "SELECT cas, forecast_mw FROM entsoe_load_forecast WHERE cas >= ? ORDER BY cas",
+            conn, params=(today,), parse_dates=["cas"],
+        )
+        conn.close()
+        if df.empty:
+            return pd.Series(dtype=float, name="forecast_MW")
+        df["cas"] = pd.to_datetime(df["cas"], utc=True).dt.tz_convert("Europe/Prague")
+        return df.set_index("cas")["forecast_mw"].rename("forecast_MW")
+    except Exception:
+        return pd.Series(dtype=float, name="forecast_MW")
+
+
 # ── READER (app) — čte snapshot, fallback na live ────────────────
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_ceps_imbalance():

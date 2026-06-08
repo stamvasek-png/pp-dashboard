@@ -17,7 +17,7 @@ from data.entsoe import (
 )
 from data.ceps import (
     fetch_ceps_imbalance, fetch_ceps_svr, fetch_ceps_imbalance_price, fetch_ceps_all,
-    fetch_ceps_load_from_db,
+    fetch_ceps_load_from_db, fetch_load_fc_from_db,
 )
 from data.deltagreen import fetch_deltagreen
 from data.entsog import fetch_entsog_flows, load_entsog_history
@@ -48,10 +48,11 @@ from charts.reserves import (
 # ── PAGE CONFIG ─────────────────────────────────────────────────
 
 @st.fragment(run_every=60)
-def _so_realtime_chart(load_fc):
+def _so_realtime_chart():
     df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
     df_ceps_price = fetch_ceps_imbalance_price()
     ceps_load_series = fetch_ceps_load_from_db()
+    load_fc = fetch_load_fc_from_db()
     st.markdown('<div class="section-title">Systémová odchylka + zatížení + cena odchylky — ČEPS</div>',
                 unsafe_allow_html=True)
     st.plotly_chart(
@@ -291,7 +292,7 @@ if not show_gas:
 
     # ──────────── TAB 1: ODCHYLKA + GENERACE ─────────────────────────
     with tab_dash:
-        _so_realtime_chart(load_fc)
+        _so_realtime_chart()
 
         st.markdown('<div class="section-title">Balancing strategie</div>', unsafe_allow_html=True)
         st.info(
