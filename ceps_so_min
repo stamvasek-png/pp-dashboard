@@ -1,6 +1,6 @@
 # =========================================================
 # ČEPS – scraper systémové odchylky ČR (RT feed, 1min rozlišení)
-# Session cookies získává automaticky přes Playwright (headless Chromium).
+# Cookies se cachují na disk → Playwright se spouští jen při expiraci.
 # Ukládá do SQLite.
 # =========================================================
 import json
@@ -44,17 +44,31 @@ TZ = ZoneInfo("Europe/Prague")
 TIMEOUT = 15
 
 DB_PATH = Path(__file__).parent / "data" / "ceps_odchylka.db"
+COOKIE_CACHE = Path(__file__).parent / "data" / "ceps_cookies.json"
 
 
-# ---------- SESSION (Playwright auto-refresh) ----------
+# ---------- COOKIE CACHE ----------
+def _save_cookies(cookies: dict) -> None:
+    COOKIE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    COOKIE_CACHE.write_text(json.dumps(cookies))
+
+
+def _load_cookies() -> dict | None:
+    if COOKIE_CACHE.exists():
+        try:
+            return json.loads(COOKIE_CACHE.read_text())
+        except Exception:
+            return None
+    return None
+
+
+# ---------- PLAYWRIGHT (jen při expiraci) ----------
 def _get_cookies_via_browser() -> dict:
-    """Spustí headless Chromium, nastaví cc_cookie (consent) a získá session cookies."""
+    """Spustí headless Chromium a získá čerstvé session cookies."""
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(user_agent=HEADERS["User-Agent"])
-
-        # Přednastavíme souhlas s cookies — ČEPS pak vydá plnohodnotnou session
         ctx.add_cookies([{
             "name": "cc_cookie",
             "value": json.dumps({
@@ -66,16 +80,15 @@ def _get_cookies_via_browser() -> dict:
             "domain": "www.ceps.cz",
             "path": "/",
         }])
-
         page = ctx.new_page()
         page.goto(BASE, wait_until="networkidle", timeout=30_000)
         cookies = {c["name"]: c["value"] for c in ctx.cookies()}
         browser.close()
+    _save_cookies(cookies)
     return cookies
 
 
-def _build_session() -> requests.Session:
-    cookies = _get_cookies_via_browser()
+def _build_session(cookies: dict) -> requests.Session:
     s = requests.Session()
     for name, value in cookies.items():
         s.cookies.set(name, value)
@@ -88,13 +101,18 @@ _session: requests.Session | None = None
 def _get_session() -> requests.Session:
     global _session
     if _session is None:
-        _session = _build_session()
+        # Zkus načíst z cache, jinak spusť Playwright
+        cookies = _load_cookies()
+        if cookies:
+            _session = _build_session(cookies)
+        else:
+            _session = _build_session(_get_cookies_via_browser())
     return _session
 
 
 # ---------- SCRAPER ----------
 def fetch_raw() -> dict:
-    """Stáhne JSON z ČEPS RT feedu. Při expiraci session automaticky obnoví."""
+    """Stáhne JSON z ČEPS RT feedu. Playwright spustí jen při expiraci session."""
     global _session
     for attempt in range(2):
         s = _get_session()
@@ -102,7 +120,9 @@ def fetch_raw() -> dict:
         r.raise_for_status()
         data = r.json()
         if isinstance(data, dict) and "redirect" in data:
-            _session = _build_session()
+            # Cookies expirovala → smaž cache, spusť Playwright
+            COOKIE_CACHE.unlink(missing_ok=True)
+            _session = _build_session(_get_cookies_via_browser())
             if attempt == 1:
                 raise RuntimeError("Session refresh přes Playwright selhal.")
             continue
@@ -184,14 +204,16 @@ def fetch_db(limit: int = 1440) -> pd.DataFrame:
 
 
 def sync() -> int:
+    """Stáhne aktuální den a uloží nové body. Vrátí počet nových řádků."""
     init_db()
     df = get_odchylka()
     return store(df)
 
 
-# ---------- SPUŠTĚNÍ (test) ----------
+# ---------- SPUŠTĚNÍ ----------
 if __name__ == "__main__":
-    print("Získávám cookies přes Playwright...")
+    cookie_source = "cache" if _load_cookies() else "Playwright"
+    print(f"Session: {cookie_source}")
     init_db()
     df = get_odchylka()
     new = store(df)
@@ -201,4 +223,3 @@ if __name__ == "__main__":
     print(f"Rozsah: {df['cas'].min():%H:%M} – {df['cas'].max():%H:%M}")
     print(f"Poslední bod: {df.iloc[-1]['cas']:%Y-%m-%d %H:%M} = {df.iloc[-1]['odchylka_mw']:.1f} MW")
     print(f"Delay feedu:  {delay:.1f} min")
-    print(f"DB: {DB_PATH}")
