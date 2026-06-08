@@ -75,7 +75,7 @@ with st.sidebar:
     )
 
     refresh_min = st.slider("Auto-refresh (min)", 1, 120, 1, step=1)
-    auto_refresh = st.checkbox("Auto refresh", value=True)
+    auto_refresh = st.checkbox("Auto refresh", value=False)
 
     if st.button("🔄 Obnovit data", use_container_width=True, type="primary"):
         st.cache_data.clear()
@@ -131,10 +131,7 @@ with st.sidebar:
             "\n*(připraveno, bude přidáno)*"
         )
 
-if auto_refresh:
-    import time
-    time.sleep(refresh_min * 60)
-    st.rerun()
+# global auto-refresh vypnut (SO chart má vlastní @st.fragment)
 
 # ── NAČTENÍ DAT ──────────────────────────────────────────────────
 with st.spinner("Načítám data z ENTSO-E…"):
@@ -274,28 +271,31 @@ if not show_gas:
 
     # ──────────── TAB 1: ODCHYLKA + GENERACE ─────────────────────────
     with tab_dash:
-        st.markdown('<div class="section-title">Systémová odchylka + zatížení + cena odchylky — ČEPS</div>',
-                    unsafe_allow_html=True)
-        df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
-        df_ceps_price = fetch_ceps_imbalance_price()
-        ceps_d = fetch_ceps_all()
-        _load_col = ("Load including pumping [MW]"
-                     if "Load including pumping [MW]" in ceps_d["load"].columns
-                     else "Load [MW]"
-                     if "Load [MW]" in ceps_d["load"].columns
-                     else None)
-        ceps_load_series = (ceps_d["load"][_load_col]
-                            if _load_col else pd.Series(dtype=float))
-        st.plotly_chart(
-            fig_ceps_combined(df_ceps_imbal, df_ceps_price, ceps_load_series, load_fc, now_ceps),
-            use_container_width=True, config={"displayModeBar": False},
-        )
+        @st.fragment(run_every=60)
+        def _so_realtime_chart():
+            df_ceps_imbal, now_ceps = fetch_ceps_imbalance()
+            df_ceps_price = fetch_ceps_imbalance_price()
+            ceps_d = fetch_ceps_all()
+            _load_col = ("Load including pumping [MW]"
+                         if "Load including pumping [MW]" in ceps_d["load"].columns
+                         else "Load [MW]"
+                         if "Load [MW]" in ceps_d["load"].columns
+                         else None)
+            ceps_load_series = (ceps_d["load"][_load_col]
+                                if _load_col else pd.Series(dtype=float))
+            st.markdown('<div class="section-title">Systémová odchylka + zatížení + cena odchylky — ČEPS</div>',
+                        unsafe_allow_html=True)
+            st.plotly_chart(
+                fig_ceps_combined(df_ceps_imbal, df_ceps_price, ceps_load_series, load_fc, now_ceps),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+            st.markdown('<div class="section-title">Aktivace SVR v ČR — ČEPS (minutová)</div>',
+                        unsafe_allow_html=True)
+            df_svr = fetch_ceps_svr()
+            st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
+                            use_container_width=True, config={"displayModeBar": False})
 
-        st.markdown('<div class="section-title">Aktivace SVR v ČR — ČEPS (minutová)</div>',
-                    unsafe_allow_html=True)
-        df_svr = fetch_ceps_svr()
-        st.plotly_chart(fig_ceps_svr(df_svr, now_ceps),
-                        use_container_width=True, config={"displayModeBar": False})
+        _so_realtime_chart()
 
         st.markdown('<div class="section-title">Balancing strategie</div>', unsafe_allow_html=True)
         st.info(
