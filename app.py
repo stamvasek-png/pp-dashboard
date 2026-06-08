@@ -74,8 +74,8 @@ with st.sidebar:
         placeholder="Vložte klíč…",
     )
 
-    refresh_min = st.slider("Auto-refresh (min)", 5, 120, 30, step=5)
-    auto_refresh = st.checkbox("Auto refresh", value=False)
+    refresh_min = st.slider("Auto-refresh (min)", 1, 120, 1, step=1)
+    auto_refresh = st.checkbox("Auto refresh", value=True)
 
     if st.button("🔄 Obnovit data", use_container_width=True, type="primary"):
         st.cache_data.clear()
@@ -132,10 +132,9 @@ with st.sidebar:
         )
 
 if auto_refresh:
-    st.markdown(
-        f'<meta http-equiv="refresh" content="{refresh_min * 60}">',
-        unsafe_allow_html=True,
-    )
+    import time
+    time.sleep(refresh_min * 60)
+    st.rerun()
 
 # ── NAČTENÍ DAT ──────────────────────────────────────────────────
 with st.spinner("Načítám data z ENTSO-E…"):
